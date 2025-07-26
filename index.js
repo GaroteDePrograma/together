@@ -34,6 +34,10 @@ let globalIsPaired = false;
 let globalRemotePeerId = "";
 let globalRoomMembers = [];
 
+// Variáveis globais para manter listeners ativos mesmo após desmontagem
+let globalTrackInterval = null;
+let globalPlayerStateInterval = null;
+
 // Nossa classe principal
 class TogetherApp extends react.Component {
     constructor(props) {
@@ -115,6 +119,19 @@ class TogetherApp extends react.Component {
             // Configuração dos event listeners do Spotify
             this.setupSpotifyListeners();
 
+            // Mantém os listeners ativos globalmente
+            if (!globalTrackInterval) {
+                globalTrackInterval = setInterval(() => {
+                    this.updateCurrentTrack();
+                }, 3000);
+            }
+
+            if (!globalPlayerStateInterval) {
+                globalPlayerStateInterval = setInterval(() => {
+                    this.updatePlayerState();
+                }, 1000);
+            }
+
         } catch (error) {
             console.error("Failed to load PeerJS:", error);
             this.setState({ 
@@ -149,22 +166,22 @@ class TogetherApp extends react.Component {
     }
     
     componentWillUnmount() {
-        // Limpa apenas os intervalos, mas mantém as conexões
+        // Limpa apenas os intervalos locais
         if (this.currentTrackInterval) clearInterval(this.currentTrackInterval);
         if (this.playerStateInterval) clearInterval(this.playerStateInterval);
-        
+
         // Atualiza as variáveis globais para manter o estado
         globalConnections = this.connections;
         globalIsHost = this.state.isHost;
         globalIsPaired = this.state.isPaired;
         globalRemotePeerId = this.state.remotePeerId;
         globalRoomMembers = this.state.roomMembers;
-        
-        // Remove os listeners do Spotify
+
+        // Remove os listeners do Spotify apenas localmente
         Spicetify.Player.removeEventListener("songchange", this.handleSongChange);
         Spicetify.Player.removeEventListener("onplaypause", this.handlePlayPause);
         Spicetify.Player.removeEventListener("onprogress", this.handleProgress);
-        
+
         console.log("Componente desmontado, mantendo conexão ativa");
     }
 
@@ -1149,6 +1166,27 @@ class TogetherApp extends react.Component {
                         style: styles.notification(notification.type)
                     }, notification.message)
                 )
+            ),
+            
+            // Painel de Debug (visível apenas para desenvolvedores)
+            react.createElement("div", {
+                style: {
+                    padding: "10px",
+                    backgroundColor: "#333",
+                    color: "#fff",
+                    fontSize: "12px",
+                    borderRadius: "8px",
+                    marginTop: "16px"
+                }
+            },
+                react.createElement("h4", {
+                    style: { margin: "0 0 8px 0", fontSize: "14px", fontWeight: "bold" }
+                }, "Painel de Debug"),
+                react.createElement("p", null, `Faixa Atual: ${currentTrack ? currentTrack.name : 'Nenhuma'}`),
+                react.createElement("p", null, `Artista: ${currentTrack ? currentTrack.artist : 'N/A'}`),
+                react.createElement("p", null, `Posição: ${currentPosition}ms`),
+                react.createElement("p", null, `Reproduzindo: ${isPlaying ? 'Sim' : 'Não'}`),
+                react.createElement("p", null, `Status da Conexão: ${peerConnectionStatus}`)
             )
         );
     }
