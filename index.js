@@ -45,6 +45,7 @@ let pendingSync = null;
 let lastControlUser = null; // Armazena o ID do último usuário que controlou a música
 let currentUserPriority = false; // Indica se o usuário atual tem prioridade
 let isHandlingRemotePlayPause = false; // Evita loop de play/pause
+let isHandlingRemoteSeek = false; // Evita loop de seek
 
 // Nossa classe principal
 class TogetherApp extends react.Component {
@@ -390,7 +391,40 @@ class TogetherApp extends react.Component {
     handleProgress = () => {
         // Atualiza a posição atual da música
         const position = Spicetify.Player.getProgress();
-        this.setState({ currentPosition: position });
+        
+        // Detecta saltos grandes de posição que indicam seek manual
+        const positionDiff = Math.abs(position - this.state.currentPosition);
+        
+        // Se houve um salto maior que 3 segundos e não estamos processando seek remoto
+        // E não estamos em processo de sincronização geral
+        if (positionDiff > 3000 && !isHandlingRemoteSeek && !isSyncing && this.state.isPaired) {
+            // Verifica se realmente foi um seek manual e não apenas uma atualização normal
+            // Aguarda um pequeno delay para confirmar que foi intencional
+            setTimeout(() => {
+                const currentPos = Spicetify.Player.getProgress();
+                const finalDiff = Math.abs(currentPos - this.state.currentPosition);
+                
+                // Se ainda há uma grande diferença, foi realmente um seek manual
+                if (finalDiff > 2000 && !isHandlingRemoteSeek) {
+                    console.log("[DEBUG] Confirmado seek manual via onprogress:", currentPos, "diferença final:", finalDiff);
+                    
+                    // Envia a nova posição para outros usuários
+                    this.broadcastToAll({
+                        type: "seek",
+                        data: { 
+                            position: currentPos,
+                            timestamp: Date.now()
+                        }
+                    });
+                    
+                    this.showNotification("Posição sincronizada para todos", "info");
+                    this.setState({ currentPosition: currentPos });
+                }
+            }, 200);
+        } else {
+            // Atualização normal da posição
+            this.setState({ currentPosition: position });
+        }
     };
 
     // Conecta-se a um peer remoto
@@ -635,6 +669,8 @@ class TogetherApp extends react.Component {
             
         } else if (Math.abs(Spicetify.Player.getProgress() - position) > 2000) {
             // Se for a mesma música mas a posição divergiu muito, sincroniza
+            isHandlingRemoteSeek = true; // Protege contra loop de seek
+            
             Spicetify.Player.seek(position);
             console.log("[DEBUG] Sincronizando posição para:", position);
             
@@ -645,9 +681,12 @@ class TogetherApp extends react.Component {
             
             this.showNotification(`Sincronizado posição na faixa`, "info");
             
-            // Libera sincronização imediatamente para ajustes de posição
-            isSyncing = false;
-            console.log("[DEBUG] Sincronização liberada após ajuste de posição");
+            // Libera flags após delay
+            setTimeout(() => {
+                isSyncing = false;
+                isHandlingRemoteSeek = false;
+                console.log("[DEBUG] Sincronização e seek liberados após ajuste de posição");
+            }, 500);
             
         } else {
             // Se for a mesma música e posição similar, apenas sincroniza o estado de reprodução
@@ -670,8 +709,9 @@ class TogetherApp extends react.Component {
         const { isPlaying, timestamp, position } = data;
         console.log("[DEBUG] Recebendo comando play/pause remoto:", { isPlaying, timestamp, position });
         
-        // Define a flag para evitar loop
+        // Define as flags para evitar loops
         isHandlingRemotePlayPause = true;
+        isHandlingRemoteSeek = true;
         
         // Calcula o delay da rede para melhor sincronização
         const networkDelay = Date.now() - timestamp;
@@ -701,10 +741,11 @@ class TogetherApp extends react.Component {
             currentPosition: position || this.state.currentPosition
         });
         
-        // Remove a flag após um breve delay para garantir que o evento foi processado
+        // Remove as flags após um breve delay para garantir que o evento foi processado
         setTimeout(() => {
             isHandlingRemotePlayPause = false;
-            console.log("[DEBUG] Flag de processamento remoto liberada");
+            isHandlingRemoteSeek = false;
+            console.log("[DEBUG] Flags de processamento remoto liberadas");
         }, 500);
     }
 
@@ -713,11 +754,20 @@ class TogetherApp extends react.Component {
         const { position, timestamp } = data;
         console.log("[DEBUG] Recebendo comando seek remoto:", { position, timestamp });
         
+        // Define a flag para evitar loop
+        isHandlingRemoteSeek = true;
+        
         // Qualquer usuário responde às mudanças de posição
         Spicetify.Player.seek(position);
         this.setState({ currentPosition: position });
         
         this.showNotification(`Posição sincronizada: ${Math.floor(position/1000)}s`, "info");
+        
+        // Remove a flag após um breve delay
+        setTimeout(() => {
+            isHandlingRemoteSeek = false;
+            console.log("[DEBUG] Flag de processamento de seek remoto liberada");
+        }, 500);
     }
 
     // Manipula o estado inicial recebido do host
@@ -727,6 +777,7 @@ class TogetherApp extends react.Component {
         // Marca que estamos sincronizando e processando estado remoto
         isSyncing = true;
         isHandlingRemotePlayPause = true;
+        isHandlingRemoteSeek = true;
         
         if (data.track && data.track.uri) {
             // Atualiza o estado local primeiro
@@ -748,7 +799,8 @@ class TogetherApp extends react.Component {
                     // Libera o processamento remoto após um delay adicional
                     setTimeout(() => {
                         isHandlingRemotePlayPause = false;
-                        console.log("[DEBUG] Sincronização inicial concluída e flags liberadas");
+                        isHandlingRemoteSeek = false;
+                        console.log("[DEBUG] Sincronização inicial concluída e todas as flags liberadas");
                     }, 1000);
                 });
                 
@@ -761,6 +813,7 @@ class TogetherApp extends react.Component {
             // Libera a sincronização e processamento remoto imediatamente
             isSyncing = false;
             isHandlingRemotePlayPause = false;
+            isHandlingRemoteSeek = false;
         }
     }
 
@@ -768,8 +821,9 @@ class TogetherApp extends react.Component {
     handleRemotePlayerState(state) {
         console.log("[DEBUG] Recebendo estado do player remoto:", state);
         
-        // Define a flag para evitar loop
+        // Define as flags para evitar loops
         isHandlingRemotePlayPause = true;
+        isHandlingRemoteSeek = true;
         
         // Todos os usuários respondem a atualizações de estado
         
@@ -788,10 +842,11 @@ class TogetherApp extends react.Component {
         
         // Volume não é sincronizado - cada usuário controla seu próprio volume
         
-        // Remove a flag após um breve delay
+        // Remove as flags após um breve delay
         setTimeout(() => {
             isHandlingRemotePlayPause = false;
-            console.log("[DEBUG] Flag de processamento de estado remoto liberada");
+            isHandlingRemoteSeek = false;
+            console.log("[DEBUG] Flags de processamento de estado remoto liberadas");
         }, 500);
     }
 
@@ -952,6 +1007,14 @@ class TogetherApp extends react.Component {
     };
 
     seekTrack = (position) => {
+        // Se estamos processando uma ação remota, não envia mensagem para evitar loop
+        if (isHandlingRemoteSeek) {
+            console.log("[DEBUG] Ignorando seekTrack durante processamento remoto");
+            return;
+        }
+        
+        console.log("[DEBUG] Ação manual de seek:", position);
+        
         Spicetify.Player.seek(position);
         this.setState({ currentPosition: position });
         
@@ -1013,6 +1076,7 @@ class TogetherApp extends react.Component {
         currentUserPriority = false;
         isSyncing = false;
         isHandlingRemotePlayPause = false;
+        isHandlingRemoteSeek = false;
         
         // Reinicia o estado
         this.setState({
@@ -1415,6 +1479,7 @@ class TogetherApp extends react.Component {
                 react.createElement("p", null, `Papel: ${isPaired ? (isHost ? 'Host (prioridade na faixa inicial)' : 'Convidado (recebe faixa do host)') : 'Desconectado'}`),
                 react.createElement("p", null, `Estado de Sincronização: ${isSyncing ? 'SINCRONIZANDO' : 'LIVRE'}`),
                 react.createElement("p", null, `Processando Play/Pause Remoto: ${isHandlingRemotePlayPause ? 'SIM' : 'NÃO'}`),
+                react.createElement("p", null, `Processando Seek Remoto: ${isHandlingRemoteSeek ? 'SIM' : 'NÃO'}`),
                 react.createElement("p", null, `Última Sincronização: ${lastSyncTime > 0 ? new Date(lastSyncTime).toLocaleTimeString() : 'Nunca'}`),
                 react.createElement("p", null, `Último Usuário Controlador: ${lastControlUser || 'Nenhum'}`),
                 react.createElement("p", null, `Prioridade Atual: ${currentUserPriority ? 'ESTE USUÁRIO' : 'OUTRO USUÁRIO'}`),
