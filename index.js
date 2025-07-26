@@ -210,19 +210,33 @@ class TogetherApp extends react.Component {
 
     // Atualiza as informações da faixa atual
     updateCurrentTrack = (forceSync = false) => {
-        const currentTrack = Spicetify.Player.data.track;
-        if (!currentTrack) return;
+        const playerData = Spicetify.Player.data;
+        if (!playerData || !playerData.item) {
+            console.log("[DEBUG] Player data não disponível:", playerData);
+            return;
+        }
+        
+        const currentTrack = playerData.item;
+        console.log("[DEBUG] Player data structure:", playerData);
+        console.log("[DEBUG] Current track structure:", currentTrack);
         
         const trackInfo = {
-            name: currentTrack.metadata.title,
-            artist: currentTrack.metadata.artist_name,
-            album: currentTrack.metadata.album_title,
-            duration: currentTrack.duration,
+            name: currentTrack.name || currentTrack.metadata?.title || "Música Desconhecida",
+            artist: (currentTrack.artists && currentTrack.artists[0]?.name) || 
+                   currentTrack.metadata?.artist_name || 
+                   "Artista Desconhecido",
+            album: currentTrack.album?.name || 
+                  currentTrack.metadata?.album_title || 
+                  "Álbum Desconhecido",
+            duration: currentTrack.duration_ms || currentTrack.duration || 0,
             uri: currentTrack.uri,
-            image: currentTrack.metadata.image_url,
-            contextUri: Spicetify.Player.data.context_uri || null,
-            contextType: Spicetify.Player.data.context_metadata?.context_type || null
+            image: currentTrack.album?.images?.[0]?.url || 
+                  currentTrack.metadata?.image_url || null,
+            contextUri: playerData.context?.uri || null,
+            contextType: playerData.context?.type || null
         };
+        
+        console.log("[DEBUG] Track info extraído:", trackInfo);
         
         // Compara se a música mudou usando o URI
         const trackChanged = !this.state.currentTrack || 
@@ -503,7 +517,7 @@ class TogetherApp extends react.Component {
         });
         
         // Verifica se estamos tocando a mesma música
-        const currentUri = Spicetify.Player.data?.track?.uri;
+        const currentUri = Spicetify.Player.data?.item?.uri;
         
         if (currentUri !== trackInfo.uri) {
             // Se a música for diferente, força a mudança
@@ -588,7 +602,7 @@ class TogetherApp extends react.Component {
                 
                 // Verifica novamente após um tempo se a sincronização foi bem-sucedida
                 setTimeout(() => {
-                    const currentUri = Spicetify.Player.data?.track?.uri;
+                    const currentUri = Spicetify.Player.data?.item?.uri;
                     if (currentUri !== data.track.uri) {
                         console.warn("Sincronização inicial falhou. Tentando novamente.");
                         this.playTrack(data.track.uri, data.position, data.isPlaying);
@@ -645,7 +659,7 @@ class TogetherApp extends react.Component {
             // Aguarda um tempo para que a música carregue e então sincroniza o estado
             setTimeout(() => {
                 // Verifica se a música está correta
-                const currentUri = Spicetify.Player.data?.track?.uri;
+                const currentUri = Spicetify.Player.data?.item?.uri;
                 
                 if (currentUri === uri) {
                     console.log("Música carregada com sucesso:", uri);
