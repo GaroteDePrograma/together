@@ -38,6 +38,11 @@ let globalRoomMembers = [];
 let globalTrackInterval = null;
 let globalPlayerStateInterval = null;
 
+// Variáveis para controle de sincronização e evitar loops
+let lastSyncTime = 0;
+let isSyncing = false;
+let pendingSync = null;
+
 // Nossa classe principal
 class TogetherApp extends react.Component {
     constructor(props) {
@@ -243,28 +248,48 @@ class TogetherApp extends react.Component {
                             this.state.currentTrack.uri !== trackInfo.uri;
         
         if (trackChanged || forceSync) {
-            console.log("Track changed to:", trackInfo.name);
+            console.log("[DEBUG] Track changed to:", trackInfo.name, "isSyncing:", isSyncing);
             this.setState({ currentTrack: trackInfo });
             
             // Qualquer usuário conectado pode enviar atualizações de faixa
-            if (this.state.isPaired) {
+            // MAS apenas se não estivermos em processo de sincronização
+            if (this.state.isPaired && !isSyncing) {
+                const now = Date.now();
+                
+                // Evita enviar mudanças muito rápidas (debounce de 1 segundo)
+                if (now - lastSyncTime < 1000) {
+                    console.log("[DEBUG] Ignorando mudança muito rápida, aguardando debounce");
+                    return;
+                }
+                
+                lastSyncTime = now;
+                
                 // Aguarda um pouco para garantir que a música esteja realmente carregada
                 setTimeout(() => {
+                    // Verifica novamente se não estamos sincronizando
+                    if (isSyncing) {
+                        console.log("[DEBUG] Cancelando envio - sincronização em andamento");
+                        return;
+                    }
+                    
                     const currentPosition = Spicetify.Player.getProgress();
                     const isPlaying = Spicetify.Player.isPlaying();
+                    
+                    console.log("[DEBUG] Enviando mudança de faixa:", trackInfo.name);
                     
                     this.broadcastToAll({
                         type: "track_change",
                         data: trackInfo,
                         position: currentPosition,
-                        isPlaying: isPlaying
+                        isPlaying: isPlaying,
+                        timestamp: now // Adiciona timestamp para identificar a origem
                     });
                     
                     // Adiciona uma notificação sobre a mudança de música
                     if (trackChanged) {
                         this.showNotification(`Alterou para: ${trackInfo.name} - ${trackInfo.artist}`, "info");
                     }
-                }, 500);
+                }, 800);
             }
         } else if (JSON.stringify(trackInfo) !== JSON.stringify(this.state.currentTrack)) {
             // Atualiza outras informações da faixa que possam ter mudado, mas não o URI
@@ -484,7 +509,7 @@ class TogetherApp extends react.Component {
         
         switch(data.type) {
             case "track_change":
-                this.handleTrackChange(data.data, data.position, data.isPlaying);
+                this.handleTrackChange(data.data, data.position, data.isPlaying, data.timestamp);
                 break;
                 
             case "play_pause":
@@ -513,9 +538,11 @@ class TogetherApp extends react.Component {
     }
 
     // Manipula a mudança de faixa recebida com sincronização aprimorada
-    handleTrackChange(trackInfo, position, isPlaying) {
-        // Todos os usuários respondem a mudanças de faixa
-        console.log("Recebida solicitação de mudança de faixa:", trackInfo);
+    handleTrackChange(trackInfo, position, isPlaying, timestamp) {
+        console.log("[DEBUG] Recebida solicitação de mudança de faixa:", trackInfo.name, "timestamp:", timestamp);
+        
+        // Marca que estamos sincronizando para evitar loops
+        isSyncing = true;
         
         // Sempre atualiza o estado local primeiro para refletir o que será tocado
         this.setState({ 
@@ -529,7 +556,7 @@ class TogetherApp extends react.Component {
         
         if (currentUri !== trackInfo.uri) {
             // Se a música for diferente, força a mudança
-            console.log("Mudando para nova faixa:", trackInfo.name);
+            console.log("[DEBUG] Mudando para nova faixa:", trackInfo.name);
             
             // Mostra notificação antes da mudança
             this.showNotification(
@@ -538,20 +565,18 @@ class TogetherApp extends react.Component {
             );
             
             // Reproduz a faixa com a posição e estado atualizados
-            this.playTrack(trackInfo.uri, position, isPlaying);
+            this.playTrack(trackInfo.uri, position, isPlaying, () => {
+                // Callback executado após tentar tocar
+                setTimeout(() => {
+                    isSyncing = false; // Libera sincronização após um delay
+                    console.log("[DEBUG] Sincronização liberada após mudança de faixa");
+                }, 2000);
+            });
             
-            // Verifica se a mudança foi bem-sucedida após um tempo
-            setTimeout(() => {
-                const nowPlaying = Spicetify.Player.data?.track?.uri;
-                if (nowPlaying !== trackInfo.uri) {
-                    console.warn("Falha na mudança de faixa. Tentando novamente.");
-                    this.playTrack(trackInfo.uri, position, isPlaying);
-                }
-            }, 2000);
         } else if (Math.abs(Spicetify.Player.getProgress() - position) > 2000) {
             // Se for a mesma música mas a posição divergiu muito, sincroniza
             Spicetify.Player.seek(position);
-            console.log("Sincronizando posição para:", position);
+            console.log("[DEBUG] Sincronizando posição para:", position);
             
             // Sincroniza também o estado de reprodução
             if (isPlaying !== Spicetify.Player.isPlaying()) {
@@ -559,6 +584,13 @@ class TogetherApp extends react.Component {
             }
             
             this.showNotification(`Sincronizado posição na faixa`, "info");
+            
+            // Libera sincronização mais rapidamente para ajustes de posição
+            setTimeout(() => {
+                isSyncing = false;
+                console.log("[DEBUG] Sincronização liberada após ajuste de posição");
+            }, 500);
+            
         } else {
             // Se for a mesma música e posição similar, apenas sincroniza o estado de reprodução
             if (isPlaying !== Spicetify.Player.isPlaying()) {
@@ -568,6 +600,12 @@ class TogetherApp extends react.Component {
                     "info"
                 );
             }
+            
+            // Libera sincronização rapidamente para mudanças simples
+            setTimeout(() => {
+                isSyncing = false;
+                console.log("[DEBUG] Sincronização liberada após ajuste de estado");
+            }, 200);
         }
     }
 
@@ -595,6 +633,9 @@ class TogetherApp extends react.Component {
     handleInitialState(data) {
         console.log("[DEBUG] Recebendo estado inicial do host:", data);
         
+        // Marca que estamos sincronizando
+        isSyncing = true;
+        
         if (data.track && data.track.uri) {
             // Atualiza o estado local primeiro
             this.setState({
@@ -608,24 +649,22 @@ class TogetherApp extends react.Component {
             setTimeout(() => {
                 // Tenta reproduzir a faixa do host
                 console.log("[DEBUG] Sincronizando estado inicial com música do host:", data.track.name);
-                this.playTrack(data.track.uri, data.position, data.isPlaying);
+                this.playTrack(data.track.uri, data.position, data.isPlaying, () => {
+                    // Libera a sincronização após completar
+                    setTimeout(() => {
+                        isSyncing = false;
+                        console.log("[DEBUG] Sincronização inicial concluída");
+                    }, 3000);
+                });
                 
-                // Verifica novamente após um tempo se a sincronização foi bem-sucedida
-                setTimeout(() => {
-                    const currentUri = Spicetify.Player.data?.item?.uri;
-                    if (currentUri !== data.track.uri) {
-                        console.warn("[DEBUG] Sincronização inicial falhou. Tentando novamente.");
-                        this.playTrack(data.track.uri, data.position, data.isPlaying);
-                    } else {
-                        console.log("[DEBUG] Sincronização inicial bem-sucedida!");
-                    }
-                }, 2000);
             }, 500);
             
             this.showNotification(`Sincronizando com música do host: ${data.track.name} - ${data.track.artist}`, "info");
         } else {
             console.log("[DEBUG] Host não possui música tocando no momento");
             this.showNotification("Host não está tocando música no momento", "info");
+            // Libera a sincronização imediatamente
+            isSyncing = false;
         }
     }
 
@@ -656,14 +695,14 @@ class TogetherApp extends react.Component {
     }
 
     // Reproduz uma faixa específica com sincronização aprimorada
-    playTrack(uri, position = 0, shouldPlay = true) {
+    playTrack(uri, position = 0, shouldPlay = true, callback = null) {
         // Registra o que está acontecendo para debug
-        console.log(`Tocando faixa: ${uri}, posição: ${position}ms, play: ${shouldPlay}`);
+        console.log(`[DEBUG] Tocando faixa: ${uri}, posição: ${position}ms, play: ${shouldPlay}`);
         
         // Força a reprodução da URI, ignorando o estado atual
         try {
             // Tenta usar o método mais direto primeiro
-            console.log("Forçando reprodução da URI:", uri);
+            console.log("[DEBUG] Forçando reprodução da URI:", uri);
             
             // Usa o método playUri que aceita URIs de música
             Spicetify.Player.playUri(uri);
@@ -677,7 +716,7 @@ class TogetherApp extends react.Component {
                 const currentUri = Spicetify.Player.data?.item?.uri;
                 
                 if (currentUri === uri) {
-                    console.log("Música carregada com sucesso:", uri);
+                    console.log("[DEBUG] Música carregada com sucesso:", uri);
                     
                     // Ajusta a posição se necessário
                     if (Math.abs(Spicetify.Player.getProgress() - position) > 2000) {
@@ -690,8 +729,12 @@ class TogetherApp extends react.Component {
                     } else if (!shouldPlay && Spicetify.Player.isPlaying()) {
                         Spicetify.Player.pause();
                     }
+                    
+                    // Executa callback se fornecido
+                    if (callback) callback();
+                    
                 } else {
-                    console.warn("URI não corresponde após tentativa de reprodução!", 
+                    console.warn("[DEBUG] URI não corresponde após tentativa de reprodução!", 
                                 "Esperado:", uri, "Atual:", currentUri);
                     
                     // Tenta um método alternativo com mais parâmetros
@@ -710,17 +753,20 @@ class TogetherApp extends react.Component {
                         
                         // Ajusta a posição novamente
                         Spicetify.Player.seek(position);
+                        
+                        // Executa callback se fornecido
+                        if (callback) callback();
                     }, 500);
                 }
             }, 1000);
             
         } catch (error) {
-            console.error("Erro ao reproduzir faixa:", error);
+            console.error("[DEBUG] Erro ao reproduzir faixa:", error);
             this.showNotification(`Erro ao reproduzir: ${error.message}`, "error");
             
             // Tenta método alternativo em caso de erro
             try {
-                console.log("Tentando método alternativo para tocar:", uri);
+                console.log("[DEBUG] Tentando método alternativo para tocar:", uri);
                 
                 // Método alternativo que pode funcionar em alguns casos
                 const uriObj = Spicetify.URI.fromString(uri);
@@ -733,10 +779,16 @@ class TogetherApp extends react.Component {
                     if (!shouldPlay) {
                         Spicetify.Player.pause();
                     }
+                    
+                    // Executa callback se fornecido
+                    if (callback) callback();
                 }, 1000);
             } catch (secondError) {
-                console.error("Erro no método alternativo:", secondError);
+                console.error("[DEBUG] Erro no método alternativo:", secondError);
                 this.showNotification("Não foi possível reproduzir esta música", "error");
+                
+                // Executa callback mesmo em caso de erro
+                if (callback) callback();
             }
         }
     }
@@ -1212,6 +1264,8 @@ class TogetherApp extends react.Component {
                     style: { margin: "0 0 8px 0", fontSize: "14px", fontWeight: "bold" }
                 }, "Painel de Debug"),
                 react.createElement("p", null, `Papel: ${isPaired ? (isHost ? 'Host (prioridade na faixa inicial)' : 'Convidado (recebe faixa do host)') : 'Desconectado'}`),
+                react.createElement("p", null, `Estado de Sincronização: ${isSyncing ? 'SINCRONIZANDO' : 'LIVRE'}`),
+                react.createElement("p", null, `Última Sincronização: ${new Date(lastSyncTime).toLocaleTimeString()}`),
                 react.createElement("p", null, `Faixa Atual: ${currentTrack ? currentTrack.name : 'Nenhuma'}`),
                 react.createElement("p", null, `Artista: ${currentTrack ? currentTrack.artist : 'N/A'}`),
                 react.createElement("p", null, `URI: ${currentTrack ? currentTrack.uri : 'N/A'}`),
