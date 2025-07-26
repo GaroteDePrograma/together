@@ -417,26 +417,34 @@ class TogetherApp extends react.Component {
             this.handleConnectionClose(conn);
         });
 
-        // Envia e recebe o estado atual - ambos compartilham seus estados
+        // Sincronização inicial - apenas o HOST envia seu estado para evitar loops
         // Aguarda um momento para garantir que a conexão está estabelecida
         setTimeout(() => {
-            // Todos enviam seu estado atual (sem volume)
-            const currentTrack = this.state.currentTrack;
-            const isPlaying = Spicetify.Player.isPlaying();
-            const position = Spicetify.Player.getProgress();
-            
-            conn.send({
-                type: "initial_state",
-                data: {
-                    track: currentTrack,
-                    isPlaying: isPlaying,
-                    position: position,
-                    peerId: this.state.peerId
-                    // Volume NUNCA é incluído - é sempre individual
-                }
-            });
-            
-            this.showNotification("Conectado! Todos podem controlar a música.", "success");
+            // Apenas o HOST (quem recebeu a conexão) envia seu estado inicial
+            if (isIncoming) {
+                // Host envia seu estado atual para o convidado
+                const currentTrack = this.state.currentTrack;
+                const isPlaying = Spicetify.Player.isPlaying();
+                const position = Spicetify.Player.getProgress();
+                
+                console.log("[DEBUG] Host enviando estado inicial:", { currentTrack, isPlaying, position });
+                
+                conn.send({
+                    type: "initial_state",
+                    data: {
+                        track: currentTrack,
+                        isPlaying: isPlaying,
+                        position: position,
+                        peerId: this.state.peerId
+                        // Volume NUNCA é incluído - é sempre individual
+                    }
+                });
+                
+                this.showNotification("Conectado! Enviando sua música atual para o convidado.", "success");
+            } else {
+                // Convidado apenas aguarda receber o estado do host
+                this.showNotification("Conectado! Aguardando sincronização com o host.", "info");
+            }
         }, 1000);
     }
 
@@ -583,8 +591,10 @@ class TogetherApp extends react.Component {
         this.setState({ currentPosition: position });
     }
 
-    // Manipula o estado inicial recebido do outro usuário
+    // Manipula o estado inicial recebido do host
     handleInitialState(data) {
+        console.log("[DEBUG] Recebendo estado inicial do host:", data);
+        
         if (data.track && data.track.uri) {
             // Atualiza o estado local primeiro
             this.setState({
@@ -596,21 +606,26 @@ class TogetherApp extends react.Component {
             // Espera um breve momento antes de reproduzir
             // Isso garante que o estado tenha sido atualizado
             setTimeout(() => {
-                // Tenta reproduzir a faixa do outro usuário
-                console.log("Sincronizando estado inicial com:", data.track.name);
+                // Tenta reproduzir a faixa do host
+                console.log("[DEBUG] Sincronizando estado inicial com música do host:", data.track.name);
                 this.playTrack(data.track.uri, data.position, data.isPlaying);
                 
                 // Verifica novamente após um tempo se a sincronização foi bem-sucedida
                 setTimeout(() => {
                     const currentUri = Spicetify.Player.data?.item?.uri;
                     if (currentUri !== data.track.uri) {
-                        console.warn("Sincronização inicial falhou. Tentando novamente.");
+                        console.warn("[DEBUG] Sincronização inicial falhou. Tentando novamente.");
                         this.playTrack(data.track.uri, data.position, data.isPlaying);
+                    } else {
+                        console.log("[DEBUG] Sincronização inicial bem-sucedida!");
                     }
                 }, 2000);
             }, 500);
             
-            this.showNotification(`Sincronizando com: ${data.track.name} - ${data.track.artist}`, "info");
+            this.showNotification(`Sincronizando com música do host: ${data.track.name} - ${data.track.artist}`, "info");
+        } else {
+            console.log("[DEBUG] Host não possui música tocando no momento");
+            this.showNotification("Host não está tocando música no momento", "info");
         }
     }
 
@@ -1196,11 +1211,15 @@ class TogetherApp extends react.Component {
                 react.createElement("h4", {
                     style: { margin: "0 0 8px 0", fontSize: "14px", fontWeight: "bold" }
                 }, "Painel de Debug"),
+                react.createElement("p", null, `Papel: ${isPaired ? (isHost ? 'Host (prioridade na faixa inicial)' : 'Convidado (recebe faixa do host)') : 'Desconectado'}`),
                 react.createElement("p", null, `Faixa Atual: ${currentTrack ? currentTrack.name : 'Nenhuma'}`),
                 react.createElement("p", null, `Artista: ${currentTrack ? currentTrack.artist : 'N/A'}`),
+                react.createElement("p", null, `URI: ${currentTrack ? currentTrack.uri : 'N/A'}`),
                 react.createElement("p", null, `Posição: ${currentPosition}ms`),
                 react.createElement("p", null, `Reproduzindo: ${isPlaying ? 'Sim' : 'Não'}`),
-                react.createElement("p", null, `Status da Conexão: ${peerConnectionStatus}`)
+                react.createElement("p", null, `Status da Conexão: ${peerConnectionStatus}`),
+                react.createElement("p", null, `Conexões Ativas: ${this.connections.length}`),
+                react.createElement("p", null, `Peer ID: ${peerId}`)
             )
         );
     }
