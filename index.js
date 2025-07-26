@@ -139,7 +139,7 @@ class TogetherApp extends react.Component {
     }
 
     // Atualiza as informações da faixa atual
-    updateCurrentTrack = () => {
+    updateCurrentTrack = (forceSync = false) => {
         const currentTrack = Spicetify.Player.data.track;
         if (!currentTrack) return;
         
@@ -158,12 +158,12 @@ class TogetherApp extends react.Component {
         const trackChanged = !this.state.currentTrack || 
                             this.state.currentTrack.uri !== trackInfo.uri;
         
-        if (trackChanged) {
+        if (trackChanged || forceSync) {
             console.log("Track changed to:", trackInfo.name);
             this.setState({ currentTrack: trackInfo });
             
-            // Se for host, envia a atualização de faixa com alta prioridade
-            if (this.state.isHost && this.state.isPaired) {
+            // Qualquer usuário conectado pode enviar atualizações de faixa
+            if (this.state.isPaired) {
                 this.broadcastToAll({
                     type: "track_change",
                     data: trackInfo,
@@ -171,8 +171,10 @@ class TogetherApp extends react.Component {
                     isPlaying: Spicetify.Player.isPlaying()
                 });
                 
-                // Adiciona uma notificação para o host também
-                this.showNotification(`Alterou para: ${trackInfo.name} - ${trackInfo.artist}`, "info");
+                // Adiciona uma notificação sobre a mudança de música
+                if (trackChanged) {
+                    this.showNotification(`Alterou para: ${trackInfo.name} - ${trackInfo.artist}`, "info");
+                }
             }
         } else if (JSON.stringify(trackInfo) !== JSON.stringify(this.state.currentTrack)) {
             // Atualiza outras informações da faixa que possam ter mudado, mas não o URI
@@ -197,30 +199,38 @@ class TogetherApp extends react.Component {
                 currentVolume // O volume é mantido localmente apenas
             });
             
-            // Se for host, envia o estado atualizado (sem incluir o volume)
-            if (this.state.isHost && this.state.isPaired) {
-                this.broadcastToAll({
-                    type: "player_state",
-                    data: {
-                        isPlaying,
-                        position: currentPosition
-                        // Volume não é sincronizado
-                    }
-                });
+            // Qualquer usuário conectado pode enviar atualizações de estado
+            if (this.state.isPaired) {
+                // Apenas envia se for uma alteração significativa
+                // para evitar loop de atualizações entre usuários
+                if (isPlaying !== this.state.isPlaying || 
+                    Math.abs(currentPosition - this.state.currentPosition) > 3000) {
+                    
+                    this.broadcastToAll({
+                        type: "player_state",
+                        data: {
+                            isPlaying,
+                            position: currentPosition
+                            // Volume não é sincronizado
+                        }
+                    });
+                }
             }
         }
     };
 
     // Handlers para eventos do Spotify
     handleSongChange = () => {
-        this.updateCurrentTrack();
+        // Atualiza a faixa atual e envia para todos, independente de ser host ou não
+        this.updateCurrentTrack(true);
     };
 
     handlePlayPause = () => {
         const isPlaying = Spicetify.Player.isPlaying();
         this.setState({ isPlaying });
         
-        if (this.state.isHost && this.state.isPaired) {
+        // Qualquer usuário pode enviar comandos de play/pause
+        if (this.state.isPaired) {
             this.broadcastToAll({
                 type: "play_pause",
                 data: { isPlaying }
@@ -309,14 +319,14 @@ class TogetherApp extends react.Component {
             this.handleConnectionClose(conn);
         });
 
-        // Se for host, envia o estado atual
+        // Envia e recebe o estado atual
         if (!isIncoming) {
             // Aguarda um momento para garantir que a conexão está estabelecida
             setTimeout(() => {
-                this.showNotification("Conectado como convidado. O host controla a música.", "success");
+                this.showNotification("Conectado! Todos podem controlar a música.", "success");
             }, 1000);
         } else {
-            // Como host, envia o estado atual
+            // Envia o estado atual
             const currentTrack = this.state.currentTrack;
             const isPlaying = Spicetify.Player.isPlaying();
             const position = Spicetify.Player.getProgress();
@@ -332,7 +342,7 @@ class TogetherApp extends react.Component {
                     }
                 });
                 
-                this.showNotification("Alguém se conectou a você. Você é o host.", "success");
+                this.showNotification("Um amigo se conectou! Ouvindo música juntos.", "success");
             }, 1000);
         }
     }
@@ -386,10 +396,6 @@ class TogetherApp extends react.Component {
                 this.handleRemotePlayerState(data.data);
                 break;
                 
-            case "volume_change":
-                this.handleRemoteVolumeChange(data.data.volume);
-                break;
-                
             case "chat_message":
                 this.handleChatMessage(data.data, conn.peer);
                 break;
@@ -432,20 +438,20 @@ class TogetherApp extends react.Component {
 
     // Manipula o comando de play/pause recebido
     handleRemotePlayPause(isPlaying) {
-        if (!this.state.isHost) {
-            if (isPlaying) {
-                Spicetify.Player.play();
-            } else {
-                Spicetify.Player.pause();
-            }
+        // Qualquer usuário responde às mudanças de play/pause
+        if (isPlaying) {
+            Spicetify.Player.play();
+        } else {
+            Spicetify.Player.pause();
         }
+        this.setState({ isPlaying });
     }
 
     // Manipula o comando de seek recebido
     handleRemoteSeek(position) {
-        if (!this.state.isHost) {
-            Spicetify.Player.seek(position);
-        }
+        // Qualquer usuário responde às mudanças de posição
+        Spicetify.Player.seek(position);
+        this.setState({ currentPosition: position });
     }
 
     // Manipula o estado inicial recebido do host
@@ -474,11 +480,6 @@ class TogetherApp extends react.Component {
             
             // Volume não é sincronizado - cada usuário controla seu próprio volume
         }
-    }
-
-    // Volume não é mais sincronizado entre os usuários
-    handleRemoteVolumeChange(volume) {
-        // Função mantida para compatibilidade, mas não faz nada
     }
 
     // Manipula mensagens de chat
@@ -533,7 +534,7 @@ class TogetherApp extends react.Component {
         });
     }
 
-    // Ações de controle de mídia que podem ser iniciadas pelo host
+    // Ações de controle de mídia que podem ser iniciadas por qualquer usuário
     playPauseTrack = () => {
         const isPlaying = !this.state.isPlaying;
         
@@ -545,24 +546,33 @@ class TogetherApp extends react.Component {
         
         this.setState({ isPlaying });
         
-        // Se for host, envia o comando
-        if (this.state.isHost && this.state.isPaired) {
+        // Qualquer usuário pode enviar comandos de play/pause
+        if (this.state.isPaired) {
             this.broadcastToAll({
                 type: "play_pause",
                 data: { isPlaying }
             });
+            
+            // Mostra uma notificação sobre a ação
+            this.showNotification(
+                isPlaying ? "Reproduzindo música para todos" : "Música pausada para todos", 
+                "info"
+            );
         }
     };
 
     seekTrack = (position) => {
         Spicetify.Player.seek(position);
         
-        // Se for host, envia o comando
-        if (this.state.isHost && this.state.isPaired) {
+        // Qualquer usuário pode enviar comandos de seek
+        if (this.state.isPaired) {
             this.broadcastToAll({
                 type: "seek",
                 data: { position }
             });
+            
+            // Notifica a mudança de posição
+            this.showNotification("Alterando posição para todos", "info");
         }
     };
 
@@ -877,7 +887,8 @@ class TogetherApp extends react.Component {
                         react.createElement("button", {
                             style: styles.playButton,
                             onClick: this.playPauseTrack,
-                            disabled: !isHost && isPaired
+                            // Todos podem controlar a reprodução
+                            disabled: false
                         }, isPlaying ? "⏸️" : "▶️"),
                         react.createElement("input", {
                             type: "range",
@@ -886,7 +897,8 @@ class TogetherApp extends react.Component {
                             value: currentPosition,
                             style: styles.slider,
                             onChange: (e) => this.seekTrack(parseInt(e.target.value)),
-                            disabled: !isHost && isPaired
+                            // Todos podem controlar a posição
+                            disabled: false
                         })
                     ),
                     react.createElement("div", { style: styles.volumeControl },
@@ -908,7 +920,7 @@ class TogetherApp extends react.Component {
             isPaired && react.createElement("div", { style: styles.card },
                 react.createElement("h3", null, "Participantes"),
                 react.createElement("div", { style: styles.infoText },
-                    isHost ? "Você é o host da sessão" : "Você é um convidado nesta sessão"
+                    "Todos podem controlar a reprodução. Ouvindo juntos!"
                 ),
                 react.createElement("ul", { style: styles.membersList },
                     react.createElement("li", { style: styles.memberItem }, 
