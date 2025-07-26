@@ -217,17 +217,23 @@ class TogetherApp extends react.Component {
             
             // Qualquer usuário conectado pode enviar atualizações de faixa
             if (this.state.isPaired) {
-                this.broadcastToAll({
-                    type: "track_change",
-                    data: trackInfo,
-                    position: Spicetify.Player.getProgress(),
-                    isPlaying: Spicetify.Player.isPlaying()
-                });
-                
-                // Adiciona uma notificação sobre a mudança de música
-                if (trackChanged) {
-                    this.showNotification(`Alterou para: ${trackInfo.name} - ${trackInfo.artist}`, "info");
-                }
+                // Aguarda um pouco para garantir que a música esteja realmente carregada
+                setTimeout(() => {
+                    const currentPosition = Spicetify.Player.getProgress();
+                    const isPlaying = Spicetify.Player.isPlaying();
+                    
+                    this.broadcastToAll({
+                        type: "track_change",
+                        data: trackInfo,
+                        position: currentPosition,
+                        isPlaying: isPlaying
+                    });
+                    
+                    // Adiciona uma notificação sobre a mudança de música
+                    if (trackChanged) {
+                        this.showNotification(`Alterou para: ${trackInfo.name} - ${trackInfo.artist}`, "info");
+                    }
+                }, 500);
             }
         } else if (JSON.stringify(trackInfo) !== JSON.stringify(this.state.currentTrack)) {
             // Atualiza outras informações da faixa que possam ter mudado, mas não o URI
@@ -249,7 +255,7 @@ class TogetherApp extends react.Component {
             this.setState({ 
                 isPlaying, 
                 currentPosition,
-                currentVolume // O volume é mantido localmente apenas
+                currentVolume // O volume é mantido localmente apenas, não é sincronizado
             });
             
             // Qualquer usuário conectado pode enviar atualizações de estado
@@ -264,7 +270,7 @@ class TogetherApp extends react.Component {
                         data: {
                             isPlaying,
                             position: currentPosition
-                            // Volume não é sincronizado
+                            // Volume NUNCA é sincronizado - cada usuário controla seu próprio volume
                         }
                     });
                 }
@@ -380,32 +386,27 @@ class TogetherApp extends react.Component {
             this.handleConnectionClose(conn);
         });
 
-        // Envia e recebe o estado atual
-        if (!isIncoming) {
-            // Aguarda um momento para garantir que a conexão está estabelecida
-            setTimeout(() => {
-                this.showNotification("Conectado! Todos podem controlar a música.", "success");
-            }, 1000);
-        } else {
-            // Envia o estado atual
+        // Envia e recebe o estado atual - ambos compartilham seus estados
+        // Aguarda um momento para garantir que a conexão está estabelecida
+        setTimeout(() => {
+            // Todos enviam seu estado atual (sem volume)
             const currentTrack = this.state.currentTrack;
             const isPlaying = Spicetify.Player.isPlaying();
             const position = Spicetify.Player.getProgress();
             
-            setTimeout(() => {
-                conn.send({
-                    type: "initial_state",
-                    data: {
-                        track: currentTrack,
-                        isPlaying: isPlaying,
-                        position: position,
-                        hostId: this.state.peerId
-                    }
-                });
-                
-                this.showNotification("Um amigo se conectou! Ouvindo música juntos.", "success");
-            }, 1000);
-        }
+            conn.send({
+                type: "initial_state",
+                data: {
+                    track: currentTrack,
+                    isPlaying: isPlaying,
+                    position: position,
+                    peerId: this.state.peerId
+                    // Volume NUNCA é incluído - é sempre individual
+                }
+            });
+            
+            this.showNotification("Conectado! Todos podem controlar a música.", "success");
+        }, 1000);
     }
 
     // Manipula o fechamento de uma conexão
@@ -472,33 +473,61 @@ class TogetherApp extends react.Component {
         }
     }
 
-    // Manipula a mudança de faixa recebida
+    // Manipula a mudança de faixa recebida com sincronização aprimorada
     handleTrackChange(trackInfo, position, isPlaying) {
-        if (!this.state.isHost) {
-            // Somente clientes não-host respondem a mudanças de faixa
+        // Todos os usuários respondem a mudanças de faixa
+        console.log("Recebida solicitação de mudança de faixa:", trackInfo);
+        
+        // Sempre atualiza o estado local primeiro para refletir o que será tocado
+        this.setState({ 
+            currentTrack: trackInfo,
+            currentPosition: position,
+            isPlaying: isPlaying
+        });
+        
+        // Verifica se estamos tocando a mesma música
+        const currentUri = Spicetify.Player.data?.track?.uri;
+        
+        if (currentUri !== trackInfo.uri) {
+            // Se a música for diferente, força a mudança
+            console.log("Mudando para nova faixa:", trackInfo.name);
             
-            // Verifica se estamos tocando a mesma música
-            const currentUri = this.state.currentTrack?.uri;
-            if (currentUri !== trackInfo.uri) {
-                // Se a música for diferente, força a mudança
-                console.log("Recebida mudança de faixa do host:", trackInfo.name);
-                
-                // Reproduz a faixa com a posição e estado atualizados
-                this.playTrack(trackInfo.uri, position, isPlaying);
-                
-                // Atualiza o estado local
-                this.setState({ 
-                    currentTrack: trackInfo, 
-                    currentPosition: position,
-                    isPlaying: isPlaying 
-                });
-                
-                // Mostra notificação
-                this.showNotification(`O host mudou para: ${trackInfo.name} - ${trackInfo.artist}`, "info");
-            } else if (Math.abs(this.state.currentPosition - position) > 3000) {
-                // Se for a mesma música mas a posição divergiu muito, sincroniza
-                Spicetify.Player.seek(position);
-                this.showNotification(`Sincronizado posição na faixa`, "info");
+            // Mostra notificação antes da mudança
+            this.showNotification(
+                `Mudando para: ${trackInfo.name} - ${trackInfo.artist}`,
+                "info"
+            );
+            
+            // Reproduz a faixa com a posição e estado atualizados
+            this.playTrack(trackInfo.uri, position, isPlaying);
+            
+            // Verifica se a mudança foi bem-sucedida após um tempo
+            setTimeout(() => {
+                const nowPlaying = Spicetify.Player.data?.track?.uri;
+                if (nowPlaying !== trackInfo.uri) {
+                    console.warn("Falha na mudança de faixa. Tentando novamente.");
+                    this.playTrack(trackInfo.uri, position, isPlaying);
+                }
+            }, 2000);
+        } else if (Math.abs(Spicetify.Player.getProgress() - position) > 2000) {
+            // Se for a mesma música mas a posição divergiu muito, sincroniza
+            Spicetify.Player.seek(position);
+            console.log("Sincronizando posição para:", position);
+            
+            // Sincroniza também o estado de reprodução
+            if (isPlaying !== Spicetify.Player.isPlaying()) {
+                isPlaying ? Spicetify.Player.play() : Spicetify.Player.pause();
+            }
+            
+            this.showNotification(`Sincronizado posição na faixa`, "info");
+        } else {
+            // Se for a mesma música e posição similar, apenas sincroniza o estado de reprodução
+            if (isPlaying !== Spicetify.Player.isPlaying()) {
+                isPlaying ? Spicetify.Player.play() : Spicetify.Player.pause();
+                this.showNotification(
+                    isPlaying ? "Reprodução sincronizada" : "Pausa sincronizada", 
+                    "info"
+                );
             }
         }
     }
@@ -508,8 +537,10 @@ class TogetherApp extends react.Component {
         // Qualquer usuário responde às mudanças de play/pause
         if (isPlaying) {
             Spicetify.Player.play();
+            this.showNotification("Reprodução iniciada remotamente", "info");
         } else {
             Spicetify.Player.pause();
+            this.showNotification("Reprodução pausada remotamente", "info");
         }
         this.setState({ isPlaying });
     }
@@ -521,32 +552,53 @@ class TogetherApp extends react.Component {
         this.setState({ currentPosition: position });
     }
 
-    // Manipula o estado inicial recebido do host
+    // Manipula o estado inicial recebido do outro usuário
     handleInitialState(data) {
-        if (!this.state.isHost) {
-            if (data.track && data.track.uri) {
+        if (data.track && data.track.uri) {
+            // Atualiza o estado local primeiro
+            this.setState({
+                currentTrack: data.track,
+                currentPosition: data.position,
+                isPlaying: data.isPlaying
+            });
+            
+            // Espera um breve momento antes de reproduzir
+            // Isso garante que o estado tenha sido atualizado
+            setTimeout(() => {
+                // Tenta reproduzir a faixa do outro usuário
+                console.log("Sincronizando estado inicial com:", data.track.name);
                 this.playTrack(data.track.uri, data.position, data.isPlaying);
-                this.showNotification(`Sincronizando com: ${data.track.name} - ${data.track.artist}`, "info");
-            }
+                
+                // Verifica novamente após um tempo se a sincronização foi bem-sucedida
+                setTimeout(() => {
+                    const currentUri = Spicetify.Player.data?.track?.uri;
+                    if (currentUri !== data.track.uri) {
+                        console.warn("Sincronização inicial falhou. Tentando novamente.");
+                        this.playTrack(data.track.uri, data.position, data.isPlaying);
+                    }
+                }, 2000);
+            }, 500);
+            
+            this.showNotification(`Sincronizando com: ${data.track.name} - ${data.track.artist}`, "info");
         }
     }
 
     // Manipula o estado do player recebido
     handleRemotePlayerState(state) {
-        if (!this.state.isHost) {
-            // Sincroniza o estado de reprodução
-            if (state.isPlaying !== this.state.isPlaying) {
-                state.isPlaying ? Spicetify.Player.play() : Spicetify.Player.pause();
-            }
-            
-            // Sincroniza a posição se houver diferença maior que 2 segundos
-            const currentPosition = Spicetify.Player.getProgress();
-            if (Math.abs(currentPosition - state.position) > 2000) {
-                Spicetify.Player.seek(state.position);
-            }
-            
-            // Volume não é sincronizado - cada usuário controla seu próprio volume
+        // Todos os usuários respondem a atualizações de estado
+        
+        // Sincroniza o estado de reprodução
+        if (state.isPlaying !== this.state.isPlaying) {
+            state.isPlaying ? Spicetify.Player.play() : Spicetify.Player.pause();
         }
+        
+        // Sincroniza a posição se houver diferença maior que 2 segundos
+        const currentPosition = Spicetify.Player.getProgress();
+        if (Math.abs(currentPosition - state.position) > 2000) {
+            Spicetify.Player.seek(state.position);
+        }
+        
+        // Volume não é sincronizado - cada usuário controla seu próprio volume
     }
 
     // Manipula mensagens de chat
@@ -557,39 +609,90 @@ class TogetherApp extends react.Component {
         this.showNotification(`${sender.name}: ${messageData.message}`, "chat");
     }
 
-    // Reproduz uma faixa específica
+    // Reproduz uma faixa específica com sincronização aprimorada
     playTrack(uri, position = 0, shouldPlay = true) {
         // Registra o que está acontecendo para debug
         console.log(`Tocando faixa: ${uri}, posição: ${position}ms, play: ${shouldPlay}`);
         
-        // Reproduz a URI com mais parâmetros para melhor controle
-        Spicetify.Player.playUri(uri, {}, { 
-            seek: position,
-            skipTo: { uri: uri }
-        });
-        
-        // Verifica se devemos pausar a reprodução após carregar a música
-        if (!shouldPlay) {
-            // Aguarda um pouco para garantir que a música foi carregada antes de pausar
+        // Força a reprodução da URI, ignorando o estado atual
+        try {
+            // Tenta usar o método mais direto primeiro
+            console.log("Forçando reprodução da URI:", uri);
+            
+            // Usa o método playUri que aceita URIs de música
+            Spicetify.Player.playUri(uri);
+            
+            // Registra a tentativa
+            this.showNotification(`Tocando: ${uri.split(":")[2] || uri}`, "info");
+            
+            // Aguarda um tempo para que a música carregue e então sincroniza o estado
             setTimeout(() => {
-                Spicetify.Player.pause();
-            }, 500);
-        } else {
-            // Se deveria estar tocando mas ainda não está, força o play
-            setTimeout(() => {
-                if (!Spicetify.Player.isPlaying()) {
-                    Spicetify.Player.play();
+                // Verifica se a música está correta
+                const currentUri = Spicetify.Player.data?.track?.uri;
+                
+                if (currentUri === uri) {
+                    console.log("Música carregada com sucesso:", uri);
+                    
+                    // Ajusta a posição se necessário
+                    if (Math.abs(Spicetify.Player.getProgress() - position) > 2000) {
+                        Spicetify.Player.seek(position);
+                    }
+                    
+                    // Ajusta o estado de reprodução
+                    if (shouldPlay && !Spicetify.Player.isPlaying()) {
+                        Spicetify.Player.play();
+                    } else if (!shouldPlay && Spicetify.Player.isPlaying()) {
+                        Spicetify.Player.pause();
+                    }
+                } else {
+                    console.warn("URI não corresponde após tentativa de reprodução!", 
+                                "Esperado:", uri, "Atual:", currentUri);
+                    
+                    // Tenta um método alternativo com mais parâmetros
+                    Spicetify.Player.playUri(uri, {}, { 
+                        seek: position,
+                        skipTo: { uri: uri }
+                    });
+                    
+                    // Verifica novamente após um tempo
+                    setTimeout(() => {
+                        if (shouldPlay) {
+                            Spicetify.Player.play();
+                        } else {
+                            Spicetify.Player.pause();
+                        }
+                        
+                        // Ajusta a posição novamente
+                        Spicetify.Player.seek(position);
+                    }, 500);
                 }
-            }, 500);
-        }
-        
-        // Depois que a música carregou, verifica se a posição está correta
-        setTimeout(() => {
-            const currentPosition = Spicetify.Player.getProgress();
-            if (Math.abs(currentPosition - position) > 2000) {
-                Spicetify.Player.seek(position);
+            }, 1000);
+            
+        } catch (error) {
+            console.error("Erro ao reproduzir faixa:", error);
+            this.showNotification(`Erro ao reproduzir: ${error.message}`, "error");
+            
+            // Tenta método alternativo em caso de erro
+            try {
+                console.log("Tentando método alternativo para tocar:", uri);
+                
+                // Método alternativo que pode funcionar em alguns casos
+                const uriObj = Spicetify.URI.fromString(uri);
+                Spicetify.Player.play(uriObj);
+                
+                // Sincroniza após algum tempo
+                setTimeout(() => {
+                    Spicetify.Player.seek(position);
+                    
+                    if (!shouldPlay) {
+                        Spicetify.Player.pause();
+                    }
+                }, 1000);
+            } catch (secondError) {
+                console.error("Erro no método alternativo:", secondError);
+                this.showNotification("Não foi possível reproduzir esta música", "error");
             }
-        }, 1000);
+        }
     }
 
     // Enviar uma mensagem para todos os peers conectados
@@ -644,11 +747,13 @@ class TogetherApp extends react.Component {
     };
 
     changeVolume = (volume) => {
+        // Altera apenas o volume local - NUNCA é sincronizado com outros usuários
         Spicetify.Player.setVolume(volume / 100);
         this.setState({ currentVolume: volume });
         
-        // Volume não é mais sincronizado entre os usuários
+        // Volume não é sincronizado entre os usuários
         // Cada usuário controla seu próprio volume independentemente
+        // Não enviamos nenhuma mensagem de sincronização aqui
     };
 
     // Desconecta da sessão atual
@@ -995,7 +1100,7 @@ class TogetherApp extends react.Component {
                         })
                     ),
                     react.createElement("div", { style: styles.volumeControl },
-                        react.createElement("span", null, "Volume:"),
+                        react.createElement("span", null, "Volume (controle individual):"),
                         react.createElement("input", {
                             type: "range",
                             min: "0",
@@ -1003,8 +1108,16 @@ class TogetherApp extends react.Component {
                             value: currentVolume,
                             style: styles.volumeSlider,
                             onChange: (e) => this.changeVolume(parseInt(e.target.value)),
-                            disabled: !isHost && isPaired
-                        })
+                            disabled: false // Todos podem controlar seu próprio volume
+                        }),
+                        react.createElement("div", {
+                            style: { 
+                                fontSize: "11px", 
+                                color: "var(--spice-subtext)", 
+                                marginTop: "4px",
+                                fontWeight: "bold"
+                            }
+                        }, "✓ O volume é 100% individual e nunca será sincronizado")
                     )
                 )
             ),
@@ -1013,7 +1126,7 @@ class TogetherApp extends react.Component {
             isPaired && react.createElement("div", { style: styles.card },
                 react.createElement("h3", null, "Participantes"),
                 react.createElement("div", { style: styles.infoText },
-                    "Todos podem controlar a reprodução. Ouvindo juntos!"
+                    "Todos têm controle total sobre a música. Ouvindo juntos em sincronia!"
                 ),
                 react.createElement("ul", { style: styles.membersList },
                     react.createElement("li", { style: styles.memberItem }, 
