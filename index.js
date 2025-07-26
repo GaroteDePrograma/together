@@ -317,23 +317,9 @@ class TogetherApp extends react.Component {
                 currentVolume // O volume é mantido localmente apenas, não é sincronizado
             });
             
-            // Qualquer usuário conectado pode enviar atualizações de estado
-            if (this.state.isPaired) {
-                // Apenas envia se for uma alteração significativa
-                // para evitar loop de atualizações entre usuários
-                if (isPlaying !== this.state.isPlaying || 
-                    Math.abs(currentPosition - this.state.currentPosition) > 3000) {
-                    
-                    this.broadcastToAll({
-                        type: "player_state",
-                        data: {
-                            isPlaying,
-                            position: currentPosition
-                            // Volume NUNCA é sincronizado - cada usuário controla seu próprio volume
-                        }
-                    });
-                }
-            }
+            // NÃO ENVIA MENSAGENS DE SINCRONIZAÇÃO AUTOMÁTICA
+            // Apenas mensagens manuais (play/pause, seek, track_change) são enviadas
+            // Isso evita loops de sincronização e alternância de prioridade
         }
     };
 
@@ -392,7 +378,11 @@ class TogetherApp extends react.Component {
             console.log("[DEBUG] Enviando comando play/pause:", isPlaying);
             this.broadcastToAll({
                 type: "play_pause",
-                data: { isPlaying }
+                data: { 
+                    isPlaying,
+                    timestamp: Date.now(),
+                    position: Spicetify.Player.getProgress()
+                }
             });
         }
     };
@@ -447,6 +437,22 @@ class TogetherApp extends react.Component {
 
     // Manipula uma conexão estabelecida
     handleConnectionOpen(conn, isIncoming) {
+        // Verifica se já existe uma conexão com este peer
+        const existingConnIndex = this.connections.findIndex(c => c.peer === conn.peer);
+        const existingGlobalConnIndex = globalConnections.findIndex(c => c.peer === conn.peer);
+        
+        // Remove conexão anterior se existir
+        if (existingConnIndex !== -1) {
+            console.log("[DEBUG] Removendo conexão anterior duplicada:", conn.peer);
+            this.connections[existingConnIndex].close();
+            this.connections.splice(existingConnIndex, 1);
+        }
+        
+        if (existingGlobalConnIndex !== -1) {
+            globalConnections[existingGlobalConnIndex].close();
+            globalConnections.splice(existingGlobalConnIndex, 1);
+        }
+        
         // Adiciona à lista de conexões
         this.connections.push(conn);
         globalConnections.push(conn);
@@ -460,7 +466,10 @@ class TogetherApp extends react.Component {
         
         // Atualiza o estado local e global
         this.setState(prevState => {
-            const newRoomMembers = [...prevState.roomMembers, newMember];
+            // Remove membro anterior se existir
+            const filteredMembers = prevState.roomMembers.filter(m => m.peerId !== conn.peer);
+            const newRoomMembers = [...filteredMembers, newMember];
+            
             globalRoomMembers = newRoomMembers;
             globalIsHost = !isIncoming;
             globalIsPaired = true;
@@ -559,11 +568,11 @@ class TogetherApp extends react.Component {
                 break;
                 
             case "play_pause":
-                this.handleRemotePlayPause(data.data.isPlaying);
+                this.handleRemotePlayPause(data.data);
                 break;
                 
             case "seek":
-                this.handleRemoteSeek(data.data.position);
+                this.handleRemoteSeek(data.data);
                 break;
                 
             case "initial_state":
@@ -657,21 +666,40 @@ class TogetherApp extends react.Component {
     }
 
     // Manipula o comando de play/pause recebido
-    handleRemotePlayPause(isPlaying) {
-        console.log("[DEBUG] Recebendo comando play/pause remoto:", isPlaying);
+    handleRemotePlayPause(data) {
+        const { isPlaying, timestamp, position } = data;
+        console.log("[DEBUG] Recebendo comando play/pause remoto:", { isPlaying, timestamp, position });
         
         // Define a flag para evitar loop
         isHandlingRemotePlayPause = true;
         
+        // Calcula o delay da rede para melhor sincronização
+        const networkDelay = Date.now() - timestamp;
+        const adjustedPosition = position + networkDelay;
+        
+        console.log("[DEBUG] Delay de rede:", networkDelay, "ms. Posição ajustada:", adjustedPosition);
+        
         // Qualquer usuário responde às mudanças de play/pause
         if (isPlaying) {
+            // Se está dando play, sincroniza a posição primeiro
+            if (position && Math.abs(Spicetify.Player.getProgress() - adjustedPosition) > 1000) {
+                Spicetify.Player.seek(adjustedPosition);
+            }
             Spicetify.Player.play();
             this.showNotification("Reprodução iniciada remotamente", "info");
         } else {
             Spicetify.Player.pause();
+            // Ao pausar, também sincroniza a posição
+            if (position && Math.abs(Spicetify.Player.getProgress() - position) > 1000) {
+                Spicetify.Player.seek(position);
+            }
             this.showNotification("Reprodução pausada remotamente", "info");
         }
-        this.setState({ isPlaying });
+        
+        this.setState({ 
+            isPlaying,
+            currentPosition: position || this.state.currentPosition
+        });
         
         // Remove a flag após um breve delay para garantir que o evento foi processado
         setTimeout(() => {
@@ -681,10 +709,15 @@ class TogetherApp extends react.Component {
     }
 
     // Manipula o comando de seek recebido
-    handleRemoteSeek(position) {
+    handleRemoteSeek(data) {
+        const { position, timestamp } = data;
+        console.log("[DEBUG] Recebendo comando seek remoto:", { position, timestamp });
+        
         // Qualquer usuário responde às mudanças de posição
         Spicetify.Player.seek(position);
         this.setState({ currentPosition: position });
+        
+        this.showNotification(`Posição sincronizada: ${Math.floor(position/1000)}s`, "info");
     }
 
     // Manipula o estado inicial recebido do host
@@ -733,20 +766,33 @@ class TogetherApp extends react.Component {
 
     // Manipula o estado do player recebido
     handleRemotePlayerState(state) {
+        console.log("[DEBUG] Recebendo estado do player remoto:", state);
+        
+        // Define a flag para evitar loop
+        isHandlingRemotePlayPause = true;
+        
         // Todos os usuários respondem a atualizações de estado
         
         // Sincroniza o estado de reprodução
         if (state.isPlaying !== this.state.isPlaying) {
             state.isPlaying ? Spicetify.Player.play() : Spicetify.Player.pause();
+            this.setState({ isPlaying: state.isPlaying });
         }
         
         // Sincroniza a posição se houver diferença maior que 2 segundos
         const currentPosition = Spicetify.Player.getProgress();
         if (Math.abs(currentPosition - state.position) > 2000) {
             Spicetify.Player.seek(state.position);
+            this.setState({ currentPosition: state.position });
         }
         
         // Volume não é sincronizado - cada usuário controla seu próprio volume
+        
+        // Remove a flag após um breve delay
+        setTimeout(() => {
+            isHandlingRemotePlayPause = false;
+            console.log("[DEBUG] Flag de processamento de estado remoto liberada");
+        }, 500);
     }
 
     // Manipula mensagens de chat
@@ -890,7 +936,11 @@ class TogetherApp extends react.Component {
         if (this.state.isPaired) {
             this.broadcastToAll({
                 type: "play_pause",
-                data: { isPlaying }
+                data: { 
+                    isPlaying,
+                    timestamp: Date.now(),
+                    position: Spicetify.Player.getProgress()
+                }
             });
             
             // Mostra uma notificação sobre a ação
@@ -903,12 +953,16 @@ class TogetherApp extends react.Component {
 
     seekTrack = (position) => {
         Spicetify.Player.seek(position);
+        this.setState({ currentPosition: position });
         
         // Qualquer usuário pode enviar comandos de seek
         if (this.state.isPaired) {
             this.broadcastToAll({
                 type: "seek",
-                data: { position }
+                data: { 
+                    position,
+                    timestamp: Date.now()
+                }
             });
             
             // Notifica a mudança de posição
@@ -928,16 +982,37 @@ class TogetherApp extends react.Component {
 
     // Desconecta da sessão atual
     disconnectSession = () => {
+        console.log("[DEBUG] Iniciando desconexão da sessão");
+        
         // Fecha todas as conexões
-        this.connections.forEach(conn => conn.close());
+        this.connections.forEach(conn => {
+            try {
+                conn.close();
+            } catch (e) {
+                console.warn("[DEBUG] Erro ao fechar conexão:", e);
+            }
+        });
         this.connections = [];
         
-        // Limpa as variáveis globais
+        // Limpa as variáveis globais completamente
+        globalConnections.forEach(conn => {
+            try {
+                conn.close();
+            } catch (e) {
+                console.warn("[DEBUG] Erro ao fechar conexão global:", e);
+            }
+        });
         globalConnections = [];
         globalIsHost = false;
         globalIsPaired = false;
         globalRemotePeerId = "";
         globalRoomMembers = [];
+        
+        // Limpa também as variáveis de controle
+        lastControlUser = null;
+        currentUserPriority = false;
+        isSyncing = false;
+        isHandlingRemotePlayPause = false;
         
         // Reinicia o estado
         this.setState({
@@ -956,7 +1031,7 @@ class TogetherApp extends react.Component {
             // Recupera o ID persistente
             const persistentPeerId = localStorage.getItem('together_peer_id');
             
-            // Cria um novo peer com o mesmo ID
+            // Cria um novo peer com o mesmo ID após um delay maior
             setTimeout(() => {
                 this.peer = new Peer(persistentPeerId);
                 globalPeer = this.peer;
@@ -965,7 +1040,9 @@ class TogetherApp extends react.Component {
                 this.setState({
                     peerId: persistentPeerId
                 });
-            }, 1000);
+                
+                console.log("[DEBUG] Peer recriado com ID:", persistentPeerId);
+            }, 2000); // Delay maior para garantir limpeza
         }
         
         this.showNotification("Desconectado da sessão", "info");
@@ -1338,7 +1415,7 @@ class TogetherApp extends react.Component {
                 react.createElement("p", null, `Papel: ${isPaired ? (isHost ? 'Host (prioridade na faixa inicial)' : 'Convidado (recebe faixa do host)') : 'Desconectado'}`),
                 react.createElement("p", null, `Estado de Sincronização: ${isSyncing ? 'SINCRONIZANDO' : 'LIVRE'}`),
                 react.createElement("p", null, `Processando Play/Pause Remoto: ${isHandlingRemotePlayPause ? 'SIM' : 'NÃO'}`),
-                react.createElement("p", null, `Última Sincronização: ${new Date(lastSyncTime).toLocaleTimeString()}`),
+                react.createElement("p", null, `Última Sincronização: ${lastSyncTime > 0 ? new Date(lastSyncTime).toLocaleTimeString() : 'Nunca'}`),
                 react.createElement("p", null, `Último Usuário Controlador: ${lastControlUser || 'Nenhum'}`),
                 react.createElement("p", null, `Prioridade Atual: ${currentUserPriority ? 'ESTE USUÁRIO' : 'OUTRO USUÁRIO'}`),
                 react.createElement("p", null, `Faixa Atual: ${currentTrack ? currentTrack.name : 'Nenhuma'}`),
