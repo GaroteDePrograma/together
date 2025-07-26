@@ -26,17 +26,25 @@ function render() {
     return react.createElement(TogetherApp, { title: "Together" });
 }
 
+// Variáveis estáticas para manter o estado entre montagens do componente
+let globalPeer = null;
+let globalConnections = [];
+let globalIsHost = false;
+let globalIsPaired = false;
+let globalRemotePeerId = "";
+let globalRoomMembers = [];
+
 // Nossa classe principal
 class TogetherApp extends react.Component {
     constructor(props) {
         super(props);
         this.state = {
-            isHost: false,
-            isPaired: false,
+            isHost: globalIsHost,
+            isPaired: globalIsPaired,
             peerId: "",
-            remotePeerId: "",
+            remotePeerId: globalRemotePeerId,
             connections: [],
-            statusMessage: "Aguardando conexão...",
+            statusMessage: globalIsPaired ? "Conectado à sessão" : "Aguardando conexão...",
             inputPeerId: "",
             loadingPeerJS: true,
             currentTrack: null,
@@ -57,35 +65,53 @@ class TogetherApp extends react.Component {
 
     async componentDidMount() {
         try {
+            // Se já temos uma conexão global, reuse
+            if (globalPeer && globalPeer.open) {
+                console.log("Reusando conexão PeerJS existente");
+                this.peer = globalPeer;
+                this.connections = globalConnections;
+                
+                this.setState({
+                    loadingPeerJS: false,
+                    peerId: globalPeer.id,
+                    isHost: globalIsHost,
+                    isPaired: globalIsPaired,
+                    remotePeerId: globalRemotePeerId,
+                    connections: globalConnections,
+                    roomMembers: globalRoomMembers,
+                    peerConnectionStatus: globalIsPaired ? "connected" : "disconnected"
+                });
+                
+                // Re-configure os event listeners para este novo componente
+                this.setupPeerListeners();
+                this.setupSpotifyListeners();
+                
+                return;
+            }
+            
             // Carrega a biblioteca PeerJS dinamicamente
             const Peer = await loadPeerJS();
             this.setState({ loadingPeerJS: false });
             
-            // Gera ID randomico para o peer
-            const randomPeerId = Math.random().toString(36).substring(2, 10);
+            // Usa um ID persistente ou cria um novo
+            let persistentPeerId = localStorage.getItem('together_peer_id');
             
-            // Inicializa o peer
-            this.peer = new Peer(randomPeerId);
+            // Se não existir um ID salvo, cria e salva
+            if (!persistentPeerId) {
+                persistentPeerId = 'user_' + Math.random().toString(36).substring(2, 10);
+                localStorage.setItem('together_peer_id', persistentPeerId);
+            }
             
-            this.peer.on("open", (id) => {
-                this.setState({ 
-                    peerId: id,
-                    statusMessage: "Conectado ao servidor P2P! Compartilhe seu ID ou conecte-se a um amigo."
-                });
-            });
-
-            this.peer.on("connection", (conn) => {
-                this.handleIncomingConnection(conn);
-            });
-
-            this.peer.on("error", (err) => {
-                console.error("Peer error:", err);
-                this.setState({ 
-                    statusMessage: `Erro na conexão P2P: ${err.message}`,
-                    peerConnectionStatus: "error" 
-                });
-            });
-
+            console.log("Usando ID persistente:", persistentPeerId);
+            
+            // Inicializa o peer com o ID persistente
+            this.peer = new Peer(persistentPeerId);
+            // Salva a referência global
+            globalPeer = this.peer;
+            
+            // Configura os listeners do peer
+            this.setupPeerListeners();
+            
             // Configuração dos event listeners do Spotify
             this.setupSpotifyListeners();
 
@@ -98,21 +124,48 @@ class TogetherApp extends react.Component {
         }
     }
 
+    // Configura os listeners do peer
+    setupPeerListeners() {
+        if (!this.peer) return;
+        
+        this.peer.on("open", (id) => {
+            this.setState({ 
+                peerId: id,
+                statusMessage: "Conectado ao servidor P2P! Compartilhe seu ID ou conecte-se a um amigo."
+            });
+        });
+
+        this.peer.on("connection", (conn) => {
+            this.handleIncomingConnection(conn);
+        });
+
+        this.peer.on("error", (err) => {
+            console.error("Peer error:", err);
+            this.setState({ 
+                statusMessage: `Erro na conexão P2P: ${err.message}`,
+                peerConnectionStatus: "error" 
+            });
+        });
+    }
+    
     componentWillUnmount() {
-        // Limpa os intervalos e conexões
+        // Limpa apenas os intervalos, mas mantém as conexões
         if (this.currentTrackInterval) clearInterval(this.currentTrackInterval);
         if (this.playerStateInterval) clearInterval(this.playerStateInterval);
         
-        // Fecha todas as conexões P2P
-        this.connections.forEach(conn => conn.close());
-        
-        // Fecha o peer
-        if (this.peer) this.peer.destroy();
+        // Atualiza as variáveis globais para manter o estado
+        globalConnections = this.connections;
+        globalIsHost = this.state.isHost;
+        globalIsPaired = this.state.isPaired;
+        globalRemotePeerId = this.state.remotePeerId;
+        globalRoomMembers = this.state.roomMembers;
         
         // Remove os listeners do Spotify
         Spicetify.Player.removeEventListener("songchange", this.handleSongChange);
         Spicetify.Player.removeEventListener("onplaypause", this.handlePlayPause);
         Spicetify.Player.removeEventListener("onprogress", this.handleProgress);
+        
+        console.log("Componente desmontado, mantendo conexão ativa");
     }
 
     setupSpotifyListeners() {
@@ -288,14 +341,22 @@ class TogetherApp extends react.Component {
     handleConnectionOpen(conn, isIncoming) {
         // Adiciona à lista de conexões
         this.connections.push(conn);
+        globalConnections.push(conn);
         
-        // Atualiza o estado
+        // Prepara o novo membro
+        const newMember = {
+            peerId: conn.peer,
+            name: conn.metadata?.name || "Usuário",
+            isHost: !isIncoming
+        };
+        
+        // Atualiza o estado local e global
         this.setState(prevState => {
-            const newRoomMembers = [...prevState.roomMembers, {
-                peerId: conn.peer,
-                name: conn.metadata?.name || "Usuário",
-                isHost: !isIncoming
-            }];
+            const newRoomMembers = [...prevState.roomMembers, newMember];
+            globalRoomMembers = newRoomMembers;
+            globalIsHost = !isIncoming;
+            globalIsPaired = true;
+            globalRemotePeerId = conn.peer;
             
             return {
                 isPaired: true,
@@ -351,6 +412,7 @@ class TogetherApp extends react.Component {
     handleConnectionClose(closedConn) {
         // Remove da lista de conexões
         this.connections = this.connections.filter(conn => conn !== closedConn);
+        globalConnections = globalConnections.filter(conn => conn !== closedConn);
         
         // Atualiza a lista de membros
         this.setState(prevState => {
@@ -358,13 +420,18 @@ class TogetherApp extends react.Component {
                 member => member.peerId !== closedConn.peer
             );
             
+            // Atualiza as variáveis globais
+            globalRoomMembers = newRoomMembers;
+            const stillConnected = this.connections.length > 0;
+            globalIsPaired = stillConnected;
+            
             return {
                 roomMembers: newRoomMembers,
-                isPaired: this.connections.length > 0,
-                statusMessage: this.connections.length === 0 
-                    ? "A conexão foi encerrada. Aguardando nova conexão..."
-                    : `Um usuário desconectou. Ainda conectado com ${this.connections.length} usuário(s).`,
-                peerConnectionStatus: this.connections.length > 0 ? "connected" : "disconnected"
+                isPaired: stillConnected,
+                statusMessage: stillConnected
+                    ? `Um usuário desconectou. Ainda conectado com ${this.connections.length} usuário(s).`
+                    : "A conexão foi encerrada. Aguardando nova conexão...",
+                peerConnectionStatus: stillConnected ? "connected" : "disconnected"
             };
         });
         
@@ -590,6 +657,13 @@ class TogetherApp extends react.Component {
         this.connections.forEach(conn => conn.close());
         this.connections = [];
         
+        // Limpa as variáveis globais
+        globalConnections = [];
+        globalIsHost = false;
+        globalIsPaired = false;
+        globalRemotePeerId = "";
+        globalRoomMembers = [];
+        
         // Reinicia o estado
         this.setState({
             isPaired: false,
@@ -599,6 +673,25 @@ class TogetherApp extends react.Component {
             statusMessage: "Desconectado. Inicie uma nova sessão.",
             peerConnectionStatus: "disconnected"
         });
+        
+        // Recria o peer para evitar problemas com conexões anteriores
+        if (this.peer) {
+            this.peer.destroy();
+            
+            // Recupera o ID persistente
+            const persistentPeerId = localStorage.getItem('together_peer_id');
+            
+            // Cria um novo peer com o mesmo ID
+            setTimeout(() => {
+                this.peer = new Peer(persistentPeerId);
+                globalPeer = this.peer;
+                this.setupPeerListeners();
+                
+                this.setState({
+                    peerId: persistentPeerId
+                });
+            }, 1000);
+        }
         
         this.showNotification("Desconectado da sessão", "info");
     };
