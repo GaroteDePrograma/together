@@ -44,6 +44,7 @@ let isSyncing = false;
 let pendingSync = null;
 let lastControlUser = null; // Armazena o ID do último usuário que controlou a música
 let currentUserPriority = false; // Indica se o usuário atual tem prioridade
+let isHandlingRemotePlayPause = false; // Evita loop de play/pause
 
 // Nossa classe principal
 class TogetherApp extends react.Component {
@@ -377,11 +378,18 @@ class TogetherApp extends react.Component {
     };
 
     handlePlayPause = () => {
+        // Se estamos processando uma ação remota, não envia mensagem para evitar loop
+        if (isHandlingRemotePlayPause) {
+            console.log("[DEBUG] Ignorando handlePlayPause durante processamento remoto");
+            return;
+        }
+        
         const isPlaying = Spicetify.Player.isPlaying();
         this.setState({ isPlaying });
         
         // Qualquer usuário pode enviar comandos de play/pause
         if (this.state.isPaired) {
+            console.log("[DEBUG] Enviando comando play/pause:", isPlaying);
             this.broadcastToAll({
                 type: "play_pause",
                 data: { isPlaying }
@@ -650,6 +658,11 @@ class TogetherApp extends react.Component {
 
     // Manipula o comando de play/pause recebido
     handleRemotePlayPause(isPlaying) {
+        console.log("[DEBUG] Recebendo comando play/pause remoto:", isPlaying);
+        
+        // Define a flag para evitar loop
+        isHandlingRemotePlayPause = true;
+        
         // Qualquer usuário responde às mudanças de play/pause
         if (isPlaying) {
             Spicetify.Player.play();
@@ -659,6 +672,12 @@ class TogetherApp extends react.Component {
             this.showNotification("Reprodução pausada remotamente", "info");
         }
         this.setState({ isPlaying });
+        
+        // Remove a flag após um breve delay para garantir que o evento foi processado
+        setTimeout(() => {
+            isHandlingRemotePlayPause = false;
+            console.log("[DEBUG] Flag de processamento remoto liberada");
+        }, 500);
     }
 
     // Manipula o comando de seek recebido
@@ -672,8 +691,9 @@ class TogetherApp extends react.Component {
     handleInitialState(data) {
         console.log("[DEBUG] Recebendo estado inicial do host:", data);
         
-        // Marca que estamos sincronizando
+        // Marca que estamos sincronizando e processando estado remoto
         isSyncing = true;
+        isHandlingRemotePlayPause = true;
         
         if (data.track && data.track.uri) {
             // Atualiza o estado local primeiro
@@ -691,7 +711,12 @@ class TogetherApp extends react.Component {
                 this.playTrack(data.track.uri, data.position, data.isPlaying, () => {
                     // Libera a sincronização imediatamente após completar
                     isSyncing = false;
-                    console.log("[DEBUG] Sincronização inicial concluída");
+                    
+                    // Libera o processamento remoto após um delay adicional
+                    setTimeout(() => {
+                        isHandlingRemotePlayPause = false;
+                        console.log("[DEBUG] Sincronização inicial concluída e flags liberadas");
+                    }, 1000);
                 });
                 
             }, 300);
@@ -700,8 +725,9 @@ class TogetherApp extends react.Component {
         } else {
             console.log("[DEBUG] Host não possui música tocando no momento");
             this.showNotification("Host não está tocando música no momento", "info");
-            // Libera a sincronização imediatamente
+            // Libera a sincronização e processamento remoto imediatamente
             isSyncing = false;
+            isHandlingRemotePlayPause = false;
         }
     }
 
@@ -841,7 +867,16 @@ class TogetherApp extends react.Component {
 
     // Ações de controle de mídia que podem ser iniciadas por qualquer usuário
     playPauseTrack = () => {
+        // Se estamos processando uma ação remota, aguarda um momento
+        if (isHandlingRemotePlayPause) {
+            console.log("[DEBUG] Aguardando processamento remoto terminar antes de executar ação manual");
+            setTimeout(() => this.playPauseTrack(), 600);
+            return;
+        }
+        
         const isPlaying = !this.state.isPlaying;
+        
+        console.log("[DEBUG] Ação manual de play/pause:", isPlaying);
         
         if (isPlaying) {
             Spicetify.Player.play();
@@ -1302,6 +1337,7 @@ class TogetherApp extends react.Component {
                 }, "Painel de Debug"),
                 react.createElement("p", null, `Papel: ${isPaired ? (isHost ? 'Host (prioridade na faixa inicial)' : 'Convidado (recebe faixa do host)') : 'Desconectado'}`),
                 react.createElement("p", null, `Estado de Sincronização: ${isSyncing ? 'SINCRONIZANDO' : 'LIVRE'}`),
+                react.createElement("p", null, `Processando Play/Pause Remoto: ${isHandlingRemotePlayPause ? 'SIM' : 'NÃO'}`),
                 react.createElement("p", null, `Última Sincronização: ${new Date(lastSyncTime).toLocaleTimeString()}`),
                 react.createElement("p", null, `Último Usuário Controlador: ${lastControlUser || 'Nenhum'}`),
                 react.createElement("p", null, `Prioridade Atual: ${currentUserPriority ? 'ESTE USUÁRIO' : 'OUTRO USUÁRIO'}`),
