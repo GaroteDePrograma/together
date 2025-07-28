@@ -118,35 +118,45 @@ const globalPlayerManager = {
 
     // --- Handlers de Eventos Globais ---
     handleSongChange: () => {
+        const currentTrack = Spicetify.Player.data?.item;
+        const currentPosition = Spicetify.Player.getProgress();
         const wasNearEnd = globalPlayerManager.currentTrack && 
                           globalPlayerManager.currentPosition > (globalPlayerManager.currentTrack.duration - 5000);
         
-        // Detecta navegação manual (próxima/anterior) vs mudança automática
-        const currentPosition = Spicetify.Player.getProgress();
-        const wasManualSkip = !wasNearEnd && currentPosition < 5000 && !isHandlingRemoteSkip && !isSyncing;
+        // Detecta navegação manual vs mudança automática
+        const isManualSkip = !wasNearEnd && 
+                           currentPosition < 5000 && 
+                           !isHandlingRemoteSkip && 
+                           !isSyncing &&
+                           currentTrack &&
+                           globalPlayerManager.currentTrack &&
+                           currentTrack.uri !== globalPlayerManager.currentTrack.uri;
         
-        if (wasManualSkip && globalIsPaired && !isHandlingRemoteSkip) {
+        if (isManualSkip && globalIsPaired) {
             // Usuário navegou manualmente - sincronizar com outros
-            const newTrack = Spicetify.Player.data?.item;
-            if (newTrack) {
-                globalPlayerManager.broadcast({
-                    type: "track_change",
-                    data: {
-                        name: newTrack.name || "Música Desconhecida",
-                        artist: newTrack.artists?.[0]?.name || "Artista Desconhecido",
-                        album: newTrack.album?.name || "Álbum Desconhecido",
-                        duration: newTrack.duration_ms || newTrack.duration || 0,
-                        uri: newTrack.uri,
-                        image: newTrack.album?.images?.[0]?.url || null,
-                    },
-                    position: currentPosition,
-                    isPlaying: Spicetify.Player.isPlaying(),
-                    timestamp: Date.now(),
-                    controlUser: globalPeer?.id
-                });
-                lastControlUser = globalPeer?.id;
-                currentUserPriority = true;
-            }
+            console.log("Together: Navegação manual detectada");
+            
+            const trackInfo = {
+                name: currentTrack.name || "Música Desconhecida",
+                artist: currentTrack.artists?.[0]?.name || "Artista Desconhecido",
+                album: currentTrack.album?.name || "Álbum Desconhecido",
+                duration: currentTrack.duration_ms || currentTrack.duration || 0,
+                uri: currentTrack.uri,
+                image: currentTrack.album?.images?.[0]?.url || null,
+            };
+
+            globalPlayerManager.broadcast({
+                type: "track_change",
+                data: trackInfo,
+                position: currentPosition,
+                isPlaying: Spicetify.Player.isPlaying(),
+                timestamp: Date.now(),
+                controlUser: globalPeer?.id
+            });
+            
+            lastControlUser = globalPeer?.id;
+            currentUserPriority = true;
+            globalPlayerManager.showNotification("Música sincronizada com outros usuários", "info");
         }
         
         if (wasNearEnd && globalIsPaired) {
@@ -276,6 +286,12 @@ function setupGlobalListeners() {
     Spicetify.Player.addEventListener("onplaypause", globalPlayerManager.handlePlayPause);
     Spicetify.Player.addEventListener("onprogress", globalPlayerManager.handleProgress);
 
+    // Adiciona listeners para os botões nativos do Spotify
+    setupNativeControlsListeners();
+    
+    // Adiciona listener para atalhos de teclado
+    setupKeyboardListeners();
+
     if (!globalTrackInterval) {
         globalTrackInterval = setInterval(globalPlayerManager.updateCurrentTrack, 3000);
     }
@@ -285,6 +301,181 @@ function setupGlobalListeners() {
 
     listenersAttached = true;
     console.log("Together: Listeners de sincronização global ativados.");
+}
+
+// Função para configurar listeners dos controles nativos do Spotify
+function setupNativeControlsListeners() {
+    // Listener para capturar cliques nos botões nativos
+    const addNativeButtonListeners = () => {
+        // Múltiplos seletores para diferentes versões do Spotify
+        const nextButtonSelectors = [
+            '[data-testid="control-button-skip-forward"]',
+            '[aria-label*="next" i]',
+            '[aria-label*="próxima" i]',
+            '[aria-label*="avançar" i]',
+            '.control-button[aria-label*="Next"]',
+            'button[class*="skip"][class*="forward"]',
+            'button[title*="Next"]'
+        ];
+
+        const prevButtonSelectors = [
+            '[data-testid="control-button-skip-back"]',
+            '[aria-label*="previous" i]',
+            '[aria-label*="anterior" i]',
+            '[aria-label*="voltar" i]',
+            '.control-button[aria-label*="Previous"]',
+            'button[class*="skip"][class*="back"]',
+            'button[title*="Previous"]'
+        ];
+
+        // Tenta encontrar o botão de próxima música
+        let nextButton = null;
+        for (const selector of nextButtonSelectors) {
+            nextButton = document.querySelector(selector);
+            if (nextButton) break;
+        }
+
+        if (nextButton && !nextButton.hasTogetherListener) {
+            nextButton.addEventListener('click', () => {
+                setTimeout(() => {
+                    if (globalIsPaired && !isHandlingRemoteSkip) {
+                        globalPlayerManager.broadcast({
+                            type: "skip_next",
+                            data: {
+                                timestamp: Date.now(),
+                                controlUser: globalPeer?.id
+                            }
+                        });
+                        globalPlayerManager.showNotification("Passando para a próxima música", "info");
+                        lastControlUser = globalPeer?.id;
+                        currentUserPriority = true;
+                    }
+                }, 100);
+            });
+            nextButton.hasTogetherListener = true;
+            console.log("Together: Listener do botão próxima música adicionado");
+        }
+
+        // Tenta encontrar o botão de música anterior
+        let prevButton = null;
+        for (const selector of prevButtonSelectors) {
+            prevButton = document.querySelector(selector);
+            if (prevButton) break;
+        }
+
+        if (prevButton && !prevButton.hasTogetherListener) {
+            prevButton.addEventListener('click', () => {
+                setTimeout(() => {
+                    if (globalIsPaired && !isHandlingRemoteSkip) {
+                        globalPlayerManager.broadcast({
+                            type: "skip_previous",
+                            data: {
+                                timestamp: Date.now(),
+                                controlUser: globalPeer?.id
+                            }
+                        });
+                        globalPlayerManager.showNotification("Voltando para a música anterior", "info");
+                        lastControlUser = globalPeer?.id;
+                        currentUserPriority = true;
+                    }
+                }, 100);
+            });
+            prevButton.hasTogetherListener = true;
+            console.log("Together: Listener do botão música anterior adicionado");
+        }
+    };
+
+    // Aplica os listeners imediatamente
+    addNativeButtonListeners();
+
+    // Re-aplica os listeners periodicamente caso a interface seja recarregada
+    const intervalId = setInterval(addNativeButtonListeners, 2000);
+    
+    // Adiciona listener para mudanças no DOM
+    const observer = new MutationObserver(() => {
+        addNativeButtonListeners();
+    });
+    
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: false
+    });
+
+    // Salva referências para limpeza posterior se necessário
+    window.togetherNativeListeners = { intervalId, observer };
+}
+
+// Função para configurar listeners de atalhos de teclado
+function setupKeyboardListeners() {
+    let lastTrackUri = null;
+    let trackChangeDetectionActive = false;
+
+    const handleTrackChangeDetection = () => {
+        const currentTrackUri = Spicetify.Player.data?.item?.uri;
+        
+        if (trackChangeDetectionActive && currentTrackUri && currentTrackUri !== lastTrackUri) {
+            setTimeout(() => {
+                if (globalIsPaired && !isHandlingRemoteSkip && !isSyncing) {
+                    const currentTrack = Spicetify.Player.data?.item;
+                    if (currentTrack) {
+                        globalPlayerManager.broadcast({
+                            type: "track_change",
+                            data: {
+                                name: currentTrack.name || "Música Desconhecida",
+                                artist: currentTrack.artists?.[0]?.name || "Artista Desconhecido",
+                                album: currentTrack.album?.name || "Álbum Desconhecido",
+                                duration: currentTrack.duration_ms || currentTrack.duration || 0,
+                                uri: currentTrack.uri,
+                                image: currentTrack.album?.images?.[0]?.url || null,
+                            },
+                            position: Spicetify.Player.getProgress(),
+                            isPlaying: Spicetify.Player.isPlaying(),
+                            timestamp: Date.now(),
+                            controlUser: globalPeer?.id
+                        });
+                        lastControlUser = globalPeer?.id;
+                        currentUserPriority = true;
+                    }
+                }
+                trackChangeDetectionActive = false;
+            }, 300);
+        }
+        
+        lastTrackUri = currentTrackUri;
+    };
+
+    // Monitora mudanças de música continuamente
+    setInterval(handleTrackChangeDetection, 500);
+
+    // Listener para atalhos de teclado
+    document.addEventListener('keydown', (event) => {
+        if (!globalIsPaired || isHandlingRemoteSkip) return;
+
+        // Verifica se não está em um campo de input
+        if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
+
+        // Ctrl/Cmd + Seta Direita = Próxima música
+        if ((event.ctrlKey || event.metaKey) && event.key === 'ArrowRight') {
+            trackChangeDetectionActive = true;
+            event.preventDefault();
+        }
+        
+        // Ctrl/Cmd + Seta Esquerda = Música anterior  
+        if ((event.ctrlKey || event.metaKey) && event.key === 'ArrowLeft') {
+            trackChangeDetectionActive = true;
+            event.preventDefault();
+        }
+
+        // Media keys (se suportados)
+        if (event.key === 'MediaTrackNext') {
+            trackChangeDetectionActive = true;
+        }
+        
+        if (event.key === 'MediaTrackPrevious') {
+            trackChangeDetectionActive = true;
+        }
+    });
 }
 
 
