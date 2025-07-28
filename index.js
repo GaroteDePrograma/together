@@ -47,6 +47,7 @@ let lastControlUser = null; // Armazena o ID do último usuário que controlou a
 let currentUserPriority = false; // Indica se o usuário atual tem prioridade
 let isHandlingRemotePlayPause = false; // Evita loop de play/pause
 let isHandlingRemoteSeek = false; // Evita loop de seek
+let isHandlingRemoteSkip = false; // Evita loop de navegação
 
 // --- NOVO: Gerenciador Global de Sincronização ---
 const globalPlayerManager = {
@@ -96,10 +97,57 @@ const globalPlayerManager = {
         }
     },
 
+    // --- Funções de Navegação de Música ---
+    skipToNext: () => {
+        if (globalPlayerManager.component) {
+            globalPlayerManager.component.skipToNext();
+        } else {
+            // Fallback direto se o componente não estiver visível
+            Spicetify.Player.next();
+        }
+    },
+
+    skipToPrevious: () => {
+        if (globalPlayerManager.component) {
+            globalPlayerManager.component.skipToPrevious();
+        } else {
+            // Fallback direto se o componente não estiver visível
+            Spicetify.Player.back();
+        }
+    },
+
     // --- Handlers de Eventos Globais ---
     handleSongChange: () => {
         const wasNearEnd = globalPlayerManager.currentTrack && 
                           globalPlayerManager.currentPosition > (globalPlayerManager.currentTrack.duration - 5000);
+        
+        // Detecta navegação manual (próxima/anterior) vs mudança automática
+        const currentPosition = Spicetify.Player.getProgress();
+        const wasManualSkip = !wasNearEnd && currentPosition < 5000 && !isHandlingRemoteSkip && !isSyncing;
+        
+        if (wasManualSkip && globalIsPaired && !isHandlingRemoteSkip) {
+            // Usuário navegou manualmente - sincronizar com outros
+            const newTrack = Spicetify.Player.data?.item;
+            if (newTrack) {
+                globalPlayerManager.broadcast({
+                    type: "track_change",
+                    data: {
+                        name: newTrack.name || "Música Desconhecida",
+                        artist: newTrack.artists?.[0]?.name || "Artista Desconhecido",
+                        album: newTrack.album?.name || "Álbum Desconhecido",
+                        duration: newTrack.duration_ms || newTrack.duration || 0,
+                        uri: newTrack.uri,
+                        image: newTrack.album?.images?.[0]?.url || null,
+                    },
+                    position: currentPosition,
+                    isPlaying: Spicetify.Player.isPlaying(),
+                    timestamp: Date.now(),
+                    controlUser: globalPeer?.id
+                });
+                lastControlUser = globalPeer?.id;
+                currentUserPriority = true;
+            }
+        }
         
         if (wasNearEnd && globalIsPaired) {
             if (currentUserPriority) {
@@ -460,6 +508,12 @@ class TogetherApp extends react.Component {
             case "seek":
                 this.handleRemoteSeek(data.data);
                 break;
+            case "skip_next":
+                this.handleRemoteSkipNext(data.data);
+                break;
+            case "skip_previous":
+                this.handleRemoteSkipPrevious(data.data);
+                break;
             case "initial_state":
                 this.handleInitialState(data.data);
                 break;
@@ -520,6 +574,30 @@ class TogetherApp extends react.Component {
         Spicetify.Player.seek(position);
         globalPlayerManager.updateState({ currentPosition: position });
         setTimeout(() => { isHandlingRemoteSeek = false; }, 500);
+    }
+
+    handleRemoteSkipNext(data) {
+        const { timestamp, controlUser } = data;
+        if (controlUser !== this.state.peerId) {
+            isHandlingRemoteSkip = true;
+            this.showNotification("Passando para a próxima música", "info");
+            Spicetify.Player.next();
+            lastControlUser = controlUser;
+            currentUserPriority = false;
+            setTimeout(() => { isHandlingRemoteSkip = false; }, 2000);
+        }
+    }
+
+    handleRemoteSkipPrevious(data) {
+        const { timestamp, controlUser } = data;
+        if (controlUser !== this.state.peerId) {
+            isHandlingRemoteSkip = true;
+            this.showNotification("Voltando para a música anterior", "info");
+            Spicetify.Player.back();
+            lastControlUser = controlUser;
+            currentUserPriority = false;
+            setTimeout(() => { isHandlingRemoteSkip = false; }, 2000);
+        }
     }
 
     handleInitialState(data) {
@@ -590,6 +668,40 @@ class TogetherApp extends react.Component {
         this.setState({ currentVolume: volume });
     };
 
+    skipToNext = () => {
+        Spicetify.Player.next();
+        
+        if (globalIsPaired) {
+            this.broadcastToAll({
+                type: "skip_next",
+                data: {
+                    timestamp: Date.now(),
+                    controlUser: this.state.peerId
+                }
+            });
+            this.showNotification("Passando para a próxima música", "info");
+            lastControlUser = this.state.peerId;
+            currentUserPriority = true;
+        }
+    };
+
+    skipToPrevious = () => {
+        Spicetify.Player.back();
+        
+        if (globalIsPaired) {
+            this.broadcastToAll({
+                type: "skip_previous", 
+                data: {
+                    timestamp: Date.now(),
+                    controlUser: this.state.peerId
+                }
+            });
+            this.showNotification("Voltando para a música anterior", "info");
+            lastControlUser = this.state.peerId;
+            currentUserPriority = true;
+        }
+    };
+
     disconnectSession = () => {
         this.connections.forEach(conn => conn.close());
         this.connections = [];
@@ -636,7 +748,7 @@ class TogetherApp extends react.Component {
     render() {
         const { 
             statusMessage, peerId, inputPeerId, isPaired, isHost,
-            loadingPeerJS, currentTrack, isPlaying, peerConnectionStatus,
+            loadingPeerJS, currentTrack, isPlaying,
             currentPosition, currentVolume, notifications, roomMembers
         } = this.state;
         
@@ -650,16 +762,15 @@ class TogetherApp extends react.Component {
             peerIdDisplayContainer: { display: "flex", alignItems: "center", marginBottom: "16px" },
             peerIdDisplay: { fontFamily: "monospace", padding: "8px", background: "var(--spice-main-elevated)", borderRadius: "4px 0 0 4px", flex: 1 },
             copyButton: { padding: "8px 12px", background: "var(--spice-button)", border: "none", borderRadius: "0 4px 4px 0", cursor: "pointer" },
-            trackCard: { display: "flex", alignItems: "center", padding: "16px", background: "var(--spice-card)", borderRadius: "8px", marginBottom: "16px" },
-            trackImage: { width: "64px", height: "64px", marginRight: "16px", borderRadius: "4px" },
-            trackInfo: { flex: 1 },
-            trackTitle: { fontSize: "16px", fontWeight: "bold" },
-            trackArtist: { fontSize: "14px", color: "var(--spice-subtext)" },
-            playerControls: { display: "flex", alignItems: "center", marginTop: "16px" },
-            playButton: { background: "transparent", border: "none", cursor: "pointer", color: "var(--spice-text)", fontSize: "24px" },
+            playerControls: { display: "flex", alignItems: "center", justifyContent: "center", marginTop: "16px", gap: "8px" },
+            playButton: { background: "transparent", border: "none", cursor: "pointer", color: "var(--spice-text)", fontSize: "24px", padding: "8px" },
+            skipButton: { background: "transparent", border: "none", cursor: "pointer", color: "var(--spice-text)", fontSize: "20px", padding: "8px" },
             slider: { width: "100%", margin: "0 16px" },
             volumeControl: { display: "flex", alignItems: "center", marginTop: "16px" },
             volumeSlider: { flex: 1, marginLeft: "8px" },
+            trackInfo: { textAlign: "center", marginBottom: "16px" },
+            trackTitle: { fontSize: "16px", fontWeight: "bold", marginBottom: "4px" },
+            trackArtist: { fontSize: "14px", color: "var(--spice-subtext)" },
             notificationsContainer: { position: "fixed", bottom: "16px", right: "16px", zIndex: 1000 },
             notification: (type) => ({ padding: "12px", marginBottom: "8px", borderRadius: "4px", backgroundColor: type === "error" ? "var(--spice-notification-error)" : "var(--spice-notification-information)", color: "white", boxShadow: "0 2px 8px rgba(0,0,0,0.2)" })
         };
@@ -681,26 +792,35 @@ class TogetherApp extends react.Component {
                 isPaired && react.createElement("button", { style: {...styles.button, ...styles.disconnectButton}, onClick: this.disconnectSession }, "Desconectar"),
                 loadingPeerJS && react.createElement("p", null, "Carregando P2P...")
             ),
-            currentTrack && react.createElement("div", { style: styles.trackCard },
-                react.createElement("img", { src: currentTrack.image, style: styles.trackImage, alt: "Album" }),
-                react.createElement("div", { style: styles.trackInfo },
-                    react.createElement("div", { style: styles.trackTitle }, currentTrack.name),
-                    react.createElement("div", { style: styles.trackArtist }, currentTrack.artist),
-                    react.createElement("div", { style: styles.playerControls },
-                        react.createElement("button", { style: styles.playButton, onClick: this.playPauseTrack }, isPlaying ? "⏸️" : "▶️"),
-                        react.createElement("input", { type: "range", min: "0", max: currentTrack.duration, value: currentPosition, style: styles.slider, onChange: (e) => this.seekTrack(parseInt(e.target.value)) })
-                    ),
-                    react.createElement("div", { style: styles.volumeControl },
-                        react.createElement("span", null, "Volume:"),
-                        react.createElement("input", { type: "range", min: "0", max: "100", value: currentVolume, style: styles.volumeSlider, onChange: (e) => this.changeVolume(parseInt(e.target.value)) })
-                    )
-                )
-            ),
             isPaired && react.createElement("div", { style: styles.card },
                 react.createElement("h3", null, "Participantes"),
                 react.createElement("ul", null,
                     react.createElement("li", null, `Você ${isHost ? "(Host)" : "(Convidado)"}`),
                     roomMembers.map(member => react.createElement("li", { key: member.peerId }, `${member.name} ${member.isHost ? "(Host)" : "(Convidado)"}`))
+                )
+            ),
+            currentTrack && react.createElement("div", { style: styles.card },
+                react.createElement("h3", null, "Controles de Música"),
+                react.createElement("div", { style: styles.trackInfo },
+                    react.createElement("div", { style: styles.trackTitle }, currentTrack.name),
+                    react.createElement("div", { style: styles.trackArtist }, currentTrack.artist)
+                ),
+                react.createElement("div", { style: styles.playerControls },
+                    react.createElement("button", { 
+                        style: styles.skipButton, 
+                        onClick: this.skipToPrevious,
+                        title: "Música anterior"
+                    }, "⏮"),
+                    react.createElement("button", { 
+                        style: styles.playButton, 
+                        onClick: this.playPauseTrack,
+                        title: isPlaying ? "Pausar" : "Reproduzir"
+                    }, isPlaying ? "⏸" : "▶"),
+                    react.createElement("button", { 
+                        style: styles.skipButton, 
+                        onClick: this.skipToNext,
+                        title: "Próxima música"
+                    }, "⏭")
                 )
             ),
             react.createElement("div", { style: styles.notificationsContainer },
