@@ -500,12 +500,19 @@ class TogetherApp extends react.Component {
             roomMembers: [],
             currentVolume: Spicetify.Player.getVolume() * 100,
             showDebugPanel: false,
-            debugLog: []
+            debugLog: [],
+            customPeerId: "",
+            showIdChange: false
         };
 
         // Referências
         this.peer = null;
         this.connections = [];
+    }
+
+    async getUserData() {
+        const userData = await Spicetify.Platform.UserAPI.getUser();
+        return userData;
     }
 
     async componentDidMount() {
@@ -533,8 +540,8 @@ class TogetherApp extends react.Component {
             
             const Peer = await loadPeerJS();
             this.setState({ loadingPeerJS: false });
-            
-            let persistentPeerId = localStorage.getItem('together_peer_id') || 'user_' + Math.random().toString(36).substring(2, 10);
+
+            let persistentPeerId = localStorage.getItem('together_peer_id') || (await this.getUserData()).displayName;
             localStorage.setItem('together_peer_id', persistentPeerId);
             
             this.peer = new Peer(persistentPeerId);
@@ -925,6 +932,59 @@ class TogetherApp extends react.Component {
         this.showNotification("Desconectado da sessão", "info");
     };
 
+    changePeerId = () => {
+        const newPeerId = this.state.customPeerId.trim();
+        
+        if (!newPeerId) {
+            this.showNotification("Digite um ID válido", "error");
+            return;
+        }
+
+        if (newPeerId === this.state.peerId) {
+            this.showNotification("Este já é seu ID atual", "info");
+            return;
+        }
+
+        if (this.state.isPaired) {
+            this.showNotification("Desconecte-se primeiro para alterar o ID", "error");
+            return;
+        }
+
+        // Salva o novo ID no localStorage
+        localStorage.setItem('together_peer_id', newPeerId);
+        
+        // Fecha a conexão atual e cria uma nova com o novo ID
+        if (this.peer) {
+            this.peer.destroy();
+        }
+
+        // Aguarda um pouco para garantir que a conexão foi fechada
+        setTimeout(async () => {
+            try {
+                const Peer = await loadPeerJS();
+                this.peer = new Peer(newPeerId);
+                globalPeer = this.peer;
+                
+                this.setupPeerListeners();
+                this.setState({ 
+                    peerId: newPeerId,
+                    customPeerId: "",
+                    showIdChange: false,
+                    statusMessage: "ID alterado com sucesso! Conectado ao servidor P2P."
+                });
+                this.showNotification(`ID alterado para: ${newPeerId}`, "success");
+                
+            } catch (error) {
+                console.error("Erro ao alterar ID:", error);
+                this.setState({ 
+                    statusMessage: "Erro ao alterar ID. Tente novamente.",
+                    peerConnectionStatus: "error"
+                });
+                this.showNotification("Erro ao alterar ID", "error");
+            }
+        }, 500);
+    };
+
     showNotification(message, type = "info") {
         const id = Date.now();
         const notification = { id, message, type };
@@ -940,7 +1000,8 @@ class TogetherApp extends react.Component {
         const { 
             statusMessage, peerId, inputPeerId, isPaired, isHost,
             loadingPeerJS, currentTrack, isPlaying,
-            currentPosition, currentVolume, notifications, roomMembers
+            currentPosition, currentVolume, notifications, roomMembers,
+            customPeerId, showIdChange
         } = this.state;
         
         const styles = {
@@ -953,6 +1014,8 @@ class TogetherApp extends react.Component {
             peerIdDisplayContainer: { display: "flex", alignItems: "center", marginBottom: "16px" },
             peerIdDisplay: { fontFamily: "monospace", padding: "8px", background: "var(--spice-main-elevated)", borderRadius: "4px 0 0 4px", flex: 1 },
             copyButton: { padding: "8px 12px", background: "var(--spice-button)", border: "none", borderRadius: "0 4px 4px 0", cursor: "pointer" },
+            changeIdButton: { padding: "4px 8px", background: "var(--spice-button-secondary)", border: "none", borderRadius: "4px", cursor: "pointer", fontSize: "12px", marginLeft: "8px" },
+            idChangeContainer: { marginTop: "12px", padding: "12px", background: "var(--spice-main-elevated)", borderRadius: "4px" },
             playerControls: { display: "flex", alignItems: "center", justifyContent: "center", marginTop: "16px", gap: "8px" },
             playButton: { background: "transparent", border: "none", cursor: "pointer", color: "var(--spice-text)", fontSize: "24px", padding: "8px" },
             skipButton: { background: "transparent", border: "none", cursor: "pointer", color: "var(--spice-text)", fontSize: "20px", padding: "8px" },
@@ -973,7 +1036,26 @@ class TogetherApp extends react.Component {
                 !loadingPeerJS && !isPaired && react.createElement("div", null,
                     react.createElement("div", { style: styles.peerIdDisplayContainer },
                         react.createElement("div", { style: styles.peerIdDisplay }, peerId),
-                        react.createElement("button", { style: styles.copyButton, onClick: () => navigator.clipboard.writeText(peerId).then(() => this.showNotification("ID copiado!", "success")) }, "📋")
+                        react.createElement("button", { style: styles.copyButton, onClick: () => navigator.clipboard.writeText(peerId).then(() => this.showNotification("ID copiado!", "success")) }, "📋"),
+                        react.createElement("button", { 
+                            style: styles.changeIdButton, 
+                            onClick: () => this.setState({ showIdChange: !showIdChange }) 
+                        }, "✏️")
+                    ),
+                    showIdChange && react.createElement("div", { style: styles.idChangeContainer },
+                        react.createElement("h4", { style: { margin: "0 0 8px 0" } }, "Alterar ID"),
+                        react.createElement("div", { style: styles.inputGroup },
+                            react.createElement("input", { 
+                                type: "text", 
+                                style: styles.input, 
+                                placeholder: "Novo ID personalizado", 
+                                value: customPeerId, 
+                                onChange: (e) => this.setState({ customPeerId: e.target.value }) 
+                            }),
+                            react.createElement("button", { style: styles.button, onClick: this.changePeerId }, "Alterar")
+                        ),
+                        react.createElement("p", { style: { fontSize: "12px", color: "var(--spice-subtext)", margin: "8px 0 0 0" } }, 
+                            "Escolha um ID único e fácil de lembrar. Você deve estar desconectado para alterar.")
                     ),
                     react.createElement("div", { style: styles.inputGroup },
                         react.createElement("input", { type: "text", style: styles.input, placeholder: "ID do amigo", value: inputPeerId, onChange: (e) => this.setState({ inputPeerId: e.target.value }) }),
