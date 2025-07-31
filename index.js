@@ -35,6 +35,10 @@ let globalIsPaired = false;
 let globalRemotePeerId = "";
 let globalRoomMembers = [];
 
+// Variáveis para fila compartilhada
+let globalSharedQueue = [];
+let globalQueueListeners = [];
+
 // Variáveis globais para manter listeners ativos mesmo após desmontagem
 let globalTrackInterval = null;
 let globalPlayerStateInterval = null;
@@ -48,6 +52,248 @@ let currentUserPriority = false; // Indica se o usuário atual tem prioridade
 let isHandlingRemotePlayPause = false; // Evita loop de play/pause
 let isHandlingRemoteSeek = false; // Evita loop de seek
 let isHandlingRemoteSkip = false; // Evita loop de navegação
+
+// --- GERENCIADOR DE FILA COMPARTILHADA ---
+const sharedQueueManager = {
+    // Adiciona uma música à fila compartilhada
+    addToQueue(trackInfo, fromUser = null) {
+        const queueItem = {
+            ...trackInfo,
+            id: Date.now() + Math.random().toString(36).substr(2, 9),
+            addedBy: fromUser || globalPeer?.id || 'unknown',
+            addedAt: Date.now()
+        };
+        
+        globalSharedQueue.push(queueItem);
+        this.notifyQueueUpdate();
+        
+        // Sincroniza com outros peers
+        if (globalIsPaired && !fromUser) {
+            globalPlayerManager.broadcast({
+                type: "queue_add",
+                data: queueItem
+            });
+        }
+        
+        return queueItem;
+    },
+    
+    // Remove uma música da fila
+    removeFromQueue(itemId, fromUser = null) {
+        const index = globalSharedQueue.findIndex(item => item.id === itemId);
+        if (index !== -1) {
+            const removedItem = globalSharedQueue.splice(index, 1)[0];
+            this.notifyQueueUpdate();
+            
+            // Sincroniza com outros peers
+            if (globalIsPaired && !fromUser) {
+                globalPlayerManager.broadcast({
+                    type: "queue_remove",
+                    data: { itemId }
+                });
+            }
+            
+            return removedItem;
+        }
+        return null;
+    },
+    
+    // Toca a próxima música da fila
+    playNext() {
+        if (globalSharedQueue.length > 0) {
+            const nextTrack = globalSharedQueue.shift();
+            this.notifyQueueUpdate();
+            
+            // Toca a música
+            const trackInfo = {
+                name: nextTrack.name,
+                artist: nextTrack.artist,
+                album: nextTrack.album,
+                duration: nextTrack.duration,
+                uri: nextTrack.uri,
+                image: nextTrack.image
+            };
+            
+            if (globalPlayerManager.component) {
+                globalPlayerManager.component.playTrack(nextTrack.uri, 0, true);
+            } else {
+                Spicetify.Player.playUri(nextTrack.uri);
+            }
+            
+            // Sincroniza com outros peers
+            if (globalIsPaired) {
+                globalPlayerManager.broadcast({
+                    type: "queue_play_next",
+                    data: trackInfo
+                });
+            }
+            
+            globalPlayerManager.showNotification(`Tocando da fila: ${nextTrack.name}`, "info");
+            return nextTrack;
+        }
+        return null;
+    },
+    
+    // Move uma música na fila
+    moveQueueItem(fromIndex, toIndex, fromUser = null) {
+        if (fromIndex >= 0 && fromIndex < globalSharedQueue.length && 
+            toIndex >= 0 && toIndex < globalSharedQueue.length) {
+            const [movedItem] = globalSharedQueue.splice(fromIndex, 1);
+            globalSharedQueue.splice(toIndex, 0, movedItem);
+            this.notifyQueueUpdate();
+            
+            // Sincroniza com outros peers
+            if (globalIsPaired && !fromUser) {
+                globalPlayerManager.broadcast({
+                    type: "queue_move",
+                    data: { fromIndex, toIndex }
+                });
+            }
+        }
+    },
+    
+    // Limpa a fila
+    clearQueue(fromUser = null) {
+        globalSharedQueue = [];
+        this.notifyQueueUpdate();
+        
+        // Sincroniza com outros peers
+        if (globalIsPaired && !fromUser) {
+            globalPlayerManager.broadcast({
+                type: "queue_clear",
+                data: {}
+            });
+        }
+    },
+    
+    // Sincroniza a fila completa (usado quando um novo usuário se conecta)
+    syncCompleteQueue(targetConn = null) {
+        const message = {
+            type: "queue_sync",
+            data: { queue: globalSharedQueue }
+        };
+        
+        if (targetConn) {
+            targetConn.send(message);
+        } else if (globalIsPaired) {
+            globalPlayerManager.broadcast(message);
+        }
+    },
+    
+    // Notifica listeners sobre mudanças na fila
+    notifyQueueUpdate() {
+        globalQueueListeners.forEach(listener => {
+            try {
+                listener(globalSharedQueue);
+            } catch (err) {
+                console.error("Error notifying queue listener:", err);
+            }
+        });
+    },
+    
+    // Adiciona um listener para mudanças na fila
+    addQueueListener(listener) {
+        globalQueueListeners.push(listener);
+    },
+    
+    // Remove um listener
+    removeQueueListener(listener) {
+        const index = globalQueueListeners.indexOf(listener);
+        if (index !== -1) {
+            globalQueueListeners.splice(index, 1);
+        }
+    },
+    
+    // Obtém informações da música atual ou de um URI específico
+    async getTrackInfo(uri) {
+        // Tenta obter do player atual
+        const currentTrack = Spicetify.Player.data?.item;
+        if (currentTrack && currentTrack.uri === uri) {
+            return {
+                name: currentTrack.name || "Música Desconhecida",
+                artist: currentTrack.artists?.[0]?.name || "Artista Desconhecido",
+                album: currentTrack.album?.name || "Álbum Desconhecido",
+                duration: currentTrack.duration_ms || currentTrack.duration || 0,
+                uri: currentTrack.uri,
+                image: currentTrack.album?.images?.[0]?.url || null,
+            };
+        }
+        
+        // Tenta obter informações via Cosmos API
+        try {
+            if (Spicetify.CosmosAsync) {
+                const trackData = await Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/tracks/${uri.split(':')[2]}`);
+                if (trackData) {
+                    return {
+                        name: trackData.name || "Música Desconhecida",
+                        artist: trackData.artists?.[0]?.name || "Artista Desconhecido",
+                        album: trackData.album?.name || "Álbum Desconhecido",
+                        duration: trackData.duration_ms || 0,
+                        uri: trackData.uri || uri,
+                        image: trackData.album?.images?.[0]?.url || null,
+                    };
+                }
+            }
+        } catch (err) {
+            console.log("Could not fetch track info from API:", err);
+        }
+        
+        // Fallback: extrai informações básicas do URI
+        const trackId = uri.split(':')[2] || uri;
+        return {
+            name: `Track ${trackId.substring(0, 8)}...`,
+            artist: "Artista Desconhecido", 
+            album: "Álbum Desconhecido",
+            duration: 0,
+            uri: uri,
+            image: null
+        };
+    }
+};
+
+// --- INTEGRAÇÃO COM MENU DE CONTEXTO ---
+function setupContextMenu() {
+    if (!Spicetify.ContextMenu) {
+        console.log("ContextMenu API not available yet, retrying...");
+        setTimeout(setupContextMenu, 1000);
+        return;
+    }
+    
+    // Adiciona opção ao menu de contexto
+    const queueMenuItem = new Spicetify.ContextMenu.Item(
+        "Adicionar à fila compartilhada",
+        async (uris) => {
+            if (!globalIsPaired) {
+                globalPlayerManager.showNotification("Conecte-se a uma sessão primeiro!", "error");
+                return;
+            }
+            
+            let addedCount = 0;
+            for (const uri of uris) {
+                try {
+                    const trackInfo = await sharedQueueManager.getTrackInfo(uri);
+                    sharedQueueManager.addToQueue(trackInfo);
+                    addedCount++;
+                } catch (err) {
+                    console.error("Error adding track to queue:", err);
+                }
+            }
+            
+            if (addedCount > 0) {
+                const message = addedCount === 1 ? 
+                    "Música adicionada à fila compartilhada!" : 
+                    `${addedCount} músicas adicionadas à fila compartilhada!`;
+                globalPlayerManager.showNotification(message, "success");
+            }
+        },
+        // Condição para mostrar o item (apenas quando conectado)
+        () => globalIsPaired
+    );
+    
+    // Registra o item no menu de contexto
+    queueMenuItem.register();
+    console.log("Together: Menu de contexto da fila compartilhada registrado!");
+}
 
 // --- NOVO: Gerenciador Global de Sincronização ---
 const globalPlayerManager = {
@@ -291,6 +537,9 @@ function setupGlobalListeners() {
     
     // Adiciona listener para atalhos de teclado
     setupKeyboardListeners();
+    
+    // Configura o menu de contexto para fila compartilhada
+    setupContextMenu();
 
     if (!globalTrackInterval) {
         globalTrackInterval = setInterval(globalPlayerManager.updateCurrentTrack, 3000);
@@ -502,7 +751,9 @@ class TogetherApp extends react.Component {
             showDebugPanel: false,
             debugLog: [],
             customPeerId: "",
-            showIdChange: false
+            showIdChange: false,
+            sharedQueue: globalSharedQueue,
+            showQueue: false
         };
 
         // Referências
@@ -517,6 +768,12 @@ class TogetherApp extends react.Component {
 
     async componentDidMount() {
         globalPlayerManager.register(this); // Registra o componente no gerenciador global
+
+        // Adiciona listener para mudanças na fila
+        this.queueUpdateListener = (newQueue) => {
+            this.setState({ sharedQueue: [...newQueue] });
+        };
+        sharedQueueManager.addQueueListener(this.queueUpdateListener);
 
         try {
             if (globalPeer && globalPeer.open) {
@@ -560,6 +817,11 @@ class TogetherApp extends react.Component {
     
     componentWillUnmount() {
         globalPlayerManager.unregister(); // Desregistra o componente
+
+        // Remove listener da fila
+        if (this.queueUpdateListener) {
+            sharedQueueManager.removeQueueListener(this.queueUpdateListener);
+        }
 
         // O estado da conexão é mantido nas variáveis globais
         globalConnections = this.connections;
@@ -667,6 +929,10 @@ class TogetherApp extends react.Component {
                     type: "initial_state",
                     data: { track: currentTrack, isPlaying, position, peerId: this.state.peerId }
                 });
+                
+                // Sincroniza a fila compartilhada com o novo usuário
+                sharedQueueManager.syncCompleteQueue(conn);
+                
                 this.showNotification("Conectado! Enviando sua música atual para o convidado.", "success");
             } else {
                 this.showNotification("Conectado! Aguardando sincronização com o host.", "info");
@@ -714,6 +980,25 @@ class TogetherApp extends react.Component {
                 break;
             case "initial_state":
                 this.handleInitialState(data.data);
+                break;
+            // Casos da fila compartilhada
+            case "queue_add":
+                this.handleQueueAdd(data.data, conn.peer);
+                break;
+            case "queue_remove":
+                this.handleQueueRemove(data.data, conn.peer);
+                break;
+            case "queue_move":
+                this.handleQueueMove(data.data, conn.peer);
+                break;
+            case "queue_clear":
+                this.handleQueueClear(data.data, conn.peer);
+                break;
+            case "queue_sync":
+                this.handleQueueSync(data.data, conn.peer);
+                break;
+            case "queue_play_next":
+                this.handleQueuePlayNext(data.data, conn.peer);
                 break;
             default:
                 console.log("Unknown data type:", data.type);
@@ -827,6 +1112,44 @@ class TogetherApp extends react.Component {
         }
     }
 
+    // --- Handlers da Fila Compartilhada ---
+    
+    handleQueueAdd(queueItem, fromUser) {
+        sharedQueueManager.addToQueue(queueItem, fromUser);
+        this.showNotification(`${queueItem.name} foi adicionada à fila por outro usuário`, "info");
+    }
+    
+    handleQueueRemove(data, fromUser) {
+        const removed = sharedQueueManager.removeFromQueue(data.itemId, fromUser);
+        if (removed) {
+            this.showNotification(`${removed.name} foi removida da fila`, "info");
+        }
+    }
+    
+    handleQueueMove(data, fromUser) {
+        sharedQueueManager.moveQueueItem(data.fromIndex, data.toIndex, fromUser);
+        this.showNotification("Ordem da fila foi alterada", "info");
+    }
+    
+    handleQueueClear(data, fromUser) {
+        sharedQueueManager.clearQueue(fromUser);
+        this.showNotification("Fila compartilhada foi limpa", "info");
+    }
+    
+    handleQueueSync(data, fromUser) {
+        globalSharedQueue = data.queue || [];
+        sharedQueueManager.notifyQueueUpdate();
+        this.showNotification(`Fila sincronizada (${globalSharedQueue.length} músicas)`, "info");
+    }
+    
+    handleQueuePlayNext(data, fromUser) {
+        // Este handler é para quando outro usuário toca da fila
+        // Já foi sincronizado via track_change, apenas mostra notificação
+        this.showNotification(`Tocando da fila compartilhada: ${data.name}`, "info");
+    }
+
+    // --- Fim dos Handlers da Fila ---
+
     playTrack(uri, position = 0, shouldPlay = true, callback = null) {
         Spicetify.Player.playUri(uri).then(() => {
             setTimeout(() => {
@@ -899,6 +1222,33 @@ class TogetherApp extends react.Component {
             currentUserPriority = true;
         }
     };
+
+    // --- Métodos de Controle da Fila ---
+    
+    playFromQueue = () => {
+        const nextTrack = sharedQueueManager.playNext();
+        if (!nextTrack) {
+            this.showNotification("Fila compartilhada está vazia", "info");
+        }
+    };
+    
+    removeFromQueue = (itemId) => {
+        const removed = sharedQueueManager.removeFromQueue(itemId);
+        if (removed) {
+            this.showNotification(`${removed.name} removida da fila`, "success");
+        }
+    };
+    
+    clearSharedQueue = () => {
+        sharedQueueManager.clearQueue();
+        this.showNotification("Fila compartilhada limpa", "success");
+    };
+    
+    moveQueueItem = (fromIndex, toIndex) => {
+        sharedQueueManager.moveQueueItem(fromIndex, toIndex);
+    };
+
+    // --- Fim dos Métodos de Fila ---
 
     disconnectSession = () => {
         this.connections.forEach(conn => conn.close());
@@ -1001,7 +1351,7 @@ class TogetherApp extends react.Component {
             statusMessage, peerId, inputPeerId, isPaired, isHost,
             loadingPeerJS, currentTrack, isPlaying,
             currentPosition, currentVolume, notifications, roomMembers,
-            customPeerId, showIdChange
+            customPeerId, showIdChange, sharedQueue, showQueue
         } = this.state;
         
         const styles = {
@@ -1025,6 +1375,19 @@ class TogetherApp extends react.Component {
             trackInfo: { textAlign: "center", marginBottom: "16px" },
             trackTitle: { fontSize: "16px", fontWeight: "bold", marginBottom: "4px" },
             trackArtist: { fontSize: "14px", color: "var(--spice-subtext)" },
+            queueHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" },
+            queueToggleButton: { padding: "4px 8px", background: "var(--spice-button-secondary)", border: "none", borderRadius: "4px", cursor: "pointer", fontSize: "12px" },
+            queueList: { maxHeight: "300px", overflowY: "auto", border: "1px solid var(--spice-border)", borderRadius: "4px", padding: "8px" },
+            queueItem: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px", borderBottom: "1px solid var(--spice-border)", cursor: "pointer" },
+            queueItemInfo: { flex: 1, marginRight: "8px", textAlign: "left" },
+            queueItemTitle: { fontSize: "14px", fontWeight: "500", marginBottom: "2px" },
+            queueItemArtist: { fontSize: "12px", color: "var(--spice-subtext)" },
+            queueItemControls: { display: "flex", gap: "4px" },
+            queueControlButton: { padding: "2px 6px", background: "var(--spice-button-disabled)", border: "none", borderRadius: "3px", cursor: "pointer", fontSize: "12px" },
+            queuePlayButton: { background: "var(--spice-button-primary)", color: "var(--spice-button-primary-foreground)" },
+            queueRemoveButton: { background: "var(--spice-notification-error)", color: "white" },
+            emptyQueue: { textAlign: "center", color: "var(--spice-subtext)", padding: "20px", fontStyle: "italic" },
+            queueControls: { display: "flex", gap: "8px", marginTop: "12px" },
             notificationsContainer: { position: "fixed", bottom: "16px", right: "16px", zIndex: 1000 },
             notification: (type) => ({ padding: "12px", marginBottom: "8px", borderRadius: "4px", backgroundColor: type === "error" ? "var(--spice-notification-error)" : "var(--spice-notification-information)", color: "white", boxShadow: "0 2px 8px rgba(0,0,0,0.2)" })
         };
@@ -1094,6 +1457,56 @@ class TogetherApp extends react.Component {
                         onClick: this.skipToNext,
                         title: "Próxima música"
                     }, "⏭")
+                )
+            ),
+            isPaired && react.createElement("div", { style: styles.card },
+                react.createElement("div", { style: styles.queueHeader },
+                    react.createElement("h3", { style: { margin: 0 } }, `Fila Compartilhada (${sharedQueue.length})`),
+                    react.createElement("button", { 
+                        style: styles.queueToggleButton, 
+                        onClick: () => this.setState({ showQueue: !showQueue })
+                    }, showQueue ? "Ocultar" : "Mostrar")
+                ),
+                showQueue && (sharedQueue.length > 0 ? 
+                    react.createElement("div", null,
+                        react.createElement("div", { style: styles.queueList },
+                            sharedQueue.map((item, index) => 
+                                react.createElement("div", { key: item.id, style: styles.queueItem },
+                                    react.createElement("div", { style: styles.queueItemInfo },
+                                        react.createElement("div", { style: styles.queueItemTitle }, item.name),
+                                        react.createElement("div", { style: styles.queueItemArtist }, `${item.artist} • Adicionado por: ${item.addedBy}`)
+                                    ),
+                                    react.createElement("div", { style: styles.queueItemControls },
+                                        index === 0 && react.createElement("button", { 
+                                            style: {...styles.queueControlButton, ...styles.queuePlayButton}, 
+                                            onClick: this.playFromQueue,
+                                            title: "Tocar agora"
+                                        }, "▶"),
+                                        react.createElement("button", { 
+                                            style: {...styles.queueControlButton, ...styles.queueRemoveButton}, 
+                                            onClick: () => this.removeFromQueue(item.id),
+                                            title: "Remover da fila"
+                                        }, "🗑")
+                                    )
+                                )
+                            )
+                        ),
+                        react.createElement("div", { style: styles.queueControls },
+                            react.createElement("button", { 
+                                style: styles.button, 
+                                onClick: this.playFromQueue,
+                                disabled: sharedQueue.length === 0
+                            }, "Tocar Próxima da Fila"),
+                            react.createElement("button", { 
+                                style: {...styles.button, ...styles.disconnectButton}, 
+                                onClick: this.clearSharedQueue,
+                                disabled: sharedQueue.length === 0
+                            }, "Limpar Fila")
+                        )
+                    ) :
+                    react.createElement("div", { style: styles.emptyQueue }, 
+                        "Fila vazia. Use o clique direito em uma música para adicionar à fila compartilhada!"
+                    )
                 )
             ),
             react.createElement("div", { style: styles.notificationsContainer },
