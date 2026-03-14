@@ -30,7 +30,8 @@ var TogetherBundle = (() => {
   var SEEK_DETECTION_TOLERANCE_MS = 1800;
   var LOCAL_STORAGE_KEYS = {
     backendBaseUrl: "together_backend_base_url",
-    displayName: "together_display_name"
+    displayName: "together_display_name",
+    profileImageUrl: "together_profile_image_url"
   };
   var createId = (prefix) => {
     const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -264,9 +265,10 @@ var TogetherBundle = (() => {
     version: 0,
     updatedAt: (/* @__PURE__ */ new Date(0)).toISOString()
   });
-  var createInitialAppState = (backendBaseUrl, displayName) => ({
+  var createInitialAppState = (backendBaseUrl, displayName, profileImageUrl) => ({
     backendBaseUrl,
     displayName,
+    profileImageUrl,
     connectionStatus: "idle",
     connectionError: null,
     socketConnected: false,
@@ -276,6 +278,7 @@ var TogetherBundle = (() => {
     participants: [],
     playback: emptyPlaybackState(),
     queue: [],
+    activityLog: [],
     notifications: []
   });
   var applySnapshot = (state, options) => {
@@ -290,7 +293,8 @@ var TogetherBundle = (() => {
       snapshotVersion: snapshot.version,
       participants: snapshot.members,
       playback: snapshot.playbackState,
-      queue: snapshot.queue
+      queue: snapshot.queue,
+      activityLog: snapshot.activityLog
     };
   };
   var setConnectionState = (state, status, details) => ({
@@ -298,14 +302,6 @@ var TogetherBundle = (() => {
     connectionStatus: status,
     connectionError: details?.error ?? (status === "error" ? state.connectionError : null),
     socketConnected: details?.socketConnected ?? status === "connected"
-  });
-  var pushNotification = (state, message, kind = "info") => ({
-    ...state,
-    notifications: [{ id: createId("notice"), kind, message, createdAt: Date.now() }, ...state.notifications].slice(0, 5)
-  });
-  var dismissNotification = (state, id) => ({
-    ...state,
-    notifications: state.notifications.filter((notice) => notice.id !== id)
   });
   var resetSessionState = (state) => ({
     ...state,
@@ -317,7 +313,8 @@ var TogetherBundle = (() => {
     snapshotVersion: 0,
     participants: [],
     playback: emptyPlaybackState(),
-    queue: []
+    queue: [],
+    activityLog: []
   });
   var createAppStore = (initialState) => {
     let state = initialState;
@@ -363,13 +360,18 @@ var TogetherBundle = (() => {
     }
     async requestJson(path, init) {
       const baseUrl = normalizeBaseUrl(this.store.getState().backendBaseUrl);
-      const response = await fetch(`${baseUrl}${path}`, {
-        ...init,
-        headers: {
-          "content-type": "application/json",
-          ...init?.headers ?? {}
-        }
-      });
+      let response;
+      try {
+        response = await fetch(`${baseUrl}${path}`, {
+          ...init,
+          headers: {
+            "content-type": "application/json",
+            ...init?.headers ?? {}
+          }
+        });
+      } catch {
+        throw new Error("N\xE3o foi poss\xEDvel conectar ao servidor. Verifique se o backend est\xE1 online.");
+      }
       if (!response.ok) {
         const text = await response.text();
         throw new Error(text || `Request failed with status ${response.status}`);
@@ -436,7 +438,7 @@ var TogetherBundle = (() => {
       if (envelope.event === ServerEvents.sessionError) {
         const payload = envelope.data;
         if (payload?.message) {
-          this.store.setState((state) => pushNotification(state, payload.message, "error"));
+          showGlobalNotification(payload.message, "error");
         }
       }
     }
@@ -528,6 +530,7 @@ var TogetherBundle = (() => {
     async createRoom(initialPlayback) {
       const payload = {
         displayName: this.store.getState().displayName,
+        avatarUrl: this.store.getState().profileImageUrl,
         initialPlayback
       };
       const response = await this.requestJson("/rooms", {
@@ -539,7 +542,8 @@ var TogetherBundle = (() => {
     }
     async joinRoom(roomCode) {
       const payload = {
-        displayName: this.store.getState().displayName
+        displayName: this.store.getState().displayName,
+        avatarUrl: this.store.getState().profileImageUrl
       };
       const response = await this.requestJson(`/rooms/${roomCode}/join`, {
         method: "POST",
@@ -626,16 +630,34 @@ var TogetherBundle = (() => {
   // src/index.ts
   var react = Spicetify.React;
   var h = react.createElement;
-  var {
-    React: { useEffect, useMemo, useState }
-  } = Spicetify;
+  var { useEffect, useMemo, useState } = react;
   var loadDisplayName = () => readSpicetifyStorage(LOCAL_STORAGE_KEYS.displayName) ?? "Spotify listener";
+  var loadProfileImageUrl = () => readSpicetifyStorage(LOCAL_STORAGE_KEYS.profileImageUrl);
   var loadBackendBaseUrl = () => normalizeBaseUrl(readSpicetifyStorage(LOCAL_STORAGE_KEYS.backendBaseUrl) ?? DEFAULT_BACKEND_BASE_URL);
-  var store = createAppStore(createInitialAppState(loadBackendBaseUrl(), loadDisplayName()));
+  var store = createAppStore(createInitialAppState(loadBackendBaseUrl(), loadDisplayName(), loadProfileImageUrl()));
   var sessionClient = null;
   var playerBridge = null;
   var initialized = false;
+  var togetherQueueContextMenuItem = null;
+  var TRACK_URI_PREFIX = "spotify:track:";
+  var TOGETHER_CONTEXT_MENU_ICON = '<path d="M17 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm-10 0a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm0 2c-2.485 0-4.5 1.79-4.5 4V20h9v-3c0-.728.173-1.415.48-2.023A5.978 5.978 0 0 0 7 13Zm10 0c-.944 0-1.837.218-2.632.607A5.994 5.994 0 0 1 16.5 17v3h5v-3c0-2.21-2.015-4-4.5-4Z"/>';
+  var isSpotifyTrackUri = (uri) => {
+    const parsedUri = Spicetify?.URI?.from?.(uri);
+    return parsedUri?.type === Spicetify?.URI?.Type?.TRACK || uri.startsWith(TRACK_URI_PREFIX);
+  };
+  var extractTrackIdFromUri = (uri) => {
+    const parsedUri = Spicetify?.URI?.from?.(uri);
+    if (parsedUri?.type === Spicetify?.URI?.Type?.TRACK && typeof parsedUri.id === "string") {
+      return parsedUri.id;
+    }
+    const match = /^spotify:track:([A-Za-z0-9]+)(?:[?:].*)?$/i.exec(uri.trim());
+    if (!match) {
+      return null;
+    }
+    return match[1] ?? null;
+  };
   var ensureControllers = () => {
+    ensureQueueContextMenu();
     if (initialized) {
       return;
     }
@@ -655,26 +677,133 @@ var TogetherBundle = (() => {
     initialized = true;
   };
   var notify = (message, kind = "info") => {
-    store.setState((state) => pushNotification(state, message, kind));
     showGlobalNotification(message, kind);
   };
-  var syncDisplayNameFromSpotify = async () => {
-    const saved = readSpicetifyStorage(LOCAL_STORAGE_KEYS.displayName);
-    if (saved) {
-      return;
-    }
+  var extractSpotifyAvatarUrl = (user) => user?.avatarUrl ?? user?.imageUrl ?? user?.images?.[0]?.url ?? user?.avatar?.url ?? user?.photo_url ?? null;
+  var extractSpotifyDisplayName = (user) => user?.displayName ?? user?.display_name ?? user?.name ?? null;
+  var readSpotifyProfile = async () => {
+    let displayName = null;
+    let avatarUrl = null;
     try {
       const user = await Spicetify.Platform.UserAPI.getUser();
-      if (!user?.displayName) {
+      displayName = extractSpotifyDisplayName(user);
+      avatarUrl = extractSpotifyAvatarUrl(user);
+    } catch {
+    }
+    if (displayName && avatarUrl) {
+      return { displayName, avatarUrl };
+    }
+    try {
+      const me = await Spicetify.CosmosAsync.get("https://api.spotify.com/v1/me");
+      return {
+        displayName: displayName ?? me?.display_name ?? null,
+        avatarUrl: avatarUrl ?? me?.images?.[0]?.url ?? null
+      };
+    } catch {
+      return { displayName, avatarUrl };
+    }
+  };
+  var syncProfileFromSpotify = async () => {
+    try {
+      const profile = await readSpotifyProfile();
+      if (!profile.displayName && !profile.avatarUrl) {
         return;
       }
-      writeSpicetifyStorage(LOCAL_STORAGE_KEYS.displayName, user.displayName);
+      if (profile.displayName) {
+        writeSpicetifyStorage(LOCAL_STORAGE_KEYS.displayName, profile.displayName);
+      }
+      if (profile.avatarUrl) {
+        writeSpicetifyStorage(LOCAL_STORAGE_KEYS.profileImageUrl, profile.avatarUrl);
+      }
       store.setState((state) => ({
         ...state,
-        displayName: user.displayName
+        displayName: profile.displayName ?? state.displayName,
+        profileImageUrl: profile.avatarUrl ?? state.profileImageUrl
       }));
     } catch {
     }
+  };
+  var mapSpotifyTrackToSessionTrack = (track) => {
+    const rawUri = typeof track?.uri === "string" ? track.uri : null;
+    const trackId = rawUri ? extractTrackIdFromUri(rawUri) : null;
+    if (!rawUri || !trackId) {
+      return null;
+    }
+    const artists = Array.isArray(track?.artists) ? track.artists : Array.isArray(track?.artists?.items) ? track.artists.items : [];
+    const album = track?.album ?? track?.albumOfTrack ?? null;
+    const images = Array.isArray(album?.images) ? album.images : Array.isArray(track?.images) ? track.images : Array.isArray(track?.coverArt?.sources) ? track.coverArt.sources : [];
+    return {
+      trackUri: rawUri,
+      title: track?.name ?? track?.title ?? "Faixa desconhecida",
+      artist: artists[0]?.name ?? artists[0]?.profile?.name ?? track?.artist?.name ?? "Artista desconhecido",
+      album: album?.name ?? album?.title ?? null,
+      imageUrl: images[0]?.url ?? images[0]?.source ?? null,
+      durationMs: Number(
+        track?.duration_ms ?? track?.duration?.totalMilliseconds ?? track?.duration?.milliseconds ?? track?.duration ?? 0
+      )
+    };
+  };
+  var fetchTrackSummaryByUri = async (uri) => {
+    const trackId = extractTrackIdFromUri(uri);
+    if (!trackId) {
+      return null;
+    }
+    try {
+      const track = await Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/tracks/${trackId}`);
+      return buildTrackSummary(track) ?? mapSpotifyTrackToSessionTrack(track);
+    } catch {
+      return null;
+    }
+  };
+  var fetchTrackSummariesByUris = async (uris) => {
+    const tracks = await Promise.all(uris.map((uri) => fetchTrackSummaryByUri(uri)));
+    return tracks.filter((track) => Boolean(track));
+  };
+  var addSelectedTracksToTogetherQueue = async (uris) => {
+    ensureControllers();
+    const state = store.getState();
+    if (!state.roomCode || !state.memberId || !state.socketConnected) {
+      notify("Entre em uma sala do Together antes de adicionar faixas.", "info");
+      return;
+    }
+    const trackUris = uris.filter(isSpotifyTrackUri);
+    if (!trackUris.length) {
+      notify("Selecione pelo menos uma faixa do Spotify.", "info");
+      return;
+    }
+    try {
+      const tracks = await fetchTrackSummariesByUris(trackUris);
+      if (!tracks.length) {
+        notify("N\xE3o foi poss\xEDvel ler as faixas selecionadas.", "error");
+        return;
+      }
+      tracks.forEach((track) => sessionClient?.addTrackToQueue(track));
+      notify(
+        tracks.length === 1 ? `${tracks[0].title} adicionada \xE0 fila do Together.` : `${tracks.length} faixas adicionadas \xE0 fila do Together.`,
+        "success"
+      );
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "N\xE3o foi poss\xEDvel adicionar \xE0 fila do Together.", "error");
+    }
+  };
+  var ensureQueueContextMenu = () => {
+    if (togetherQueueContextMenuItem || !Spicetify?.ContextMenu?.Item) {
+      return;
+    }
+    togetherQueueContextMenuItem = new Spicetify.ContextMenu.Item(
+      "Adicionar \xE0 fila do Together",
+      (uris) => {
+        void addSelectedTracksToTogetherQueue(uris);
+      },
+      (uris) => {
+        const state = store.getState();
+        return Boolean(
+          state.roomCode && state.memberId && state.socketConnected && Array.isArray(uris) && uris.length && uris.every((uri) => isSpotifyTrackUri(uri))
+        );
+      },
+      TOGETHER_CONTEXT_MENU_ICON
+    );
+    togetherQueueContextMenuItem.register();
   };
   var useAppState = () => {
     const [state, setState] = useState(store.getState());
@@ -689,16 +818,9 @@ var TogetherBundle = (() => {
       backendBaseUrl: normalized
     }));
   };
-  var updateDisplayName = (value) => {
-    const normalized = value.trim() || "Spotify listener";
-    writeSpicetifyStorage(LOCAL_STORAGE_KEYS.displayName, normalized);
-    store.setState((state) => ({
-      ...state,
-      displayName: normalized
-    }));
-  };
   var createRoom = async () => {
     ensureControllers();
+    await syncProfileFromSpotify();
     try {
       await sessionClient?.createRoom(readInitialPlayback() ?? null);
       notify("Sala criada e conectada.", "success");
@@ -708,6 +830,7 @@ var TogetherBundle = (() => {
   };
   var joinRoom = async (roomCode) => {
     ensureControllers();
+    await syncProfileFromSpotify();
     try {
       await sessionClient?.joinRoom(normalizeRoomCode(roomCode));
       notify("Entrou na sess\xE3o.", "success");
@@ -741,81 +864,139 @@ var TogetherBundle = (() => {
   var skipNextQueuedTrack = () => {
     sessionClient?.skipToNextQueuedTrack();
   };
-  var dismissNotice = (id) => {
-    store.setState((state) => dismissNotification(state, id));
-  };
-  var sectionStyle = {
-    background: "linear-gradient(180deg, rgba(18, 20, 27, 0.96) 0%, rgba(10, 12, 18, 0.96) 100%)",
-    border: "1px solid rgba(202, 170, 95, 0.22)",
-    borderRadius: "18px",
-    padding: "18px",
-    boxShadow: "0 18px 40px rgba(0, 0, 0, 0.24)"
-  };
-  var pillStyle = (background) => ({
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "8px",
-    padding: "6px 12px",
-    borderRadius: "999px",
-    background,
-    fontSize: "12px",
-    fontWeight: 700,
-    letterSpacing: "0.08em",
-    textTransform: "uppercase"
-  });
-  var buttonStyle = (tone = "primary") => {
-    if (tone === "ghost") {
-      return {
-        border: "1px solid rgba(255,255,255,0.12)",
-        background: "rgba(255,255,255,0.04)",
-        color: "#f5f5f5"
-      };
+  var formatRelativeTime = (isoDate) => {
+    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - new Date(isoDate).getTime()) / 1e3));
+    if (elapsedSeconds < 10) {
+      return "agora";
     }
-    if (tone === "danger") {
-      return {
-        border: "1px solid rgba(255, 117, 117, 0.2)",
-        background: "rgba(163, 38, 38, 0.9)",
-        color: "#fff5f5"
-      };
+    if (elapsedSeconds < 60) {
+      return `${elapsedSeconds}s`;
     }
-    return {
-      border: "1px solid rgba(233, 194, 111, 0.3)",
-      background: "linear-gradient(135deg, #d9b26b 0%, #b78327 100%)",
-      color: "#171717"
-    };
+    const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+    if (elapsedMinutes < 60) {
+      return `${elapsedMinutes}m`;
+    }
+    const elapsedHours = Math.floor(elapsedMinutes / 60);
+    if (elapsedHours < 24) {
+      return `${elapsedHours}h`;
+    }
+    const elapsedDays = Math.floor(elapsedHours / 24);
+    return `${elapsedDays}d`;
   };
-  var baseButtonStyle = {
-    borderRadius: "14px",
-    padding: "11px 14px",
-    fontSize: "13px",
-    fontWeight: 700,
-    cursor: "pointer"
+  var getInitials = (value) => value.trim().split(/\s+/).slice(0, 2).map((segment) => segment[0]?.toUpperCase() ?? "").join("") || "SP";
+  var resolveParticipantPresence = (participant, options) => {
+    if (participant.isConnected || options.isSelf && options.socketConnected) {
+      return "online";
+    }
+    if (options.isSelf && options.connectionStatus === "connecting") {
+      return "connecting";
+    }
+    return "offline";
   };
-  var inputStyle = {
-    width: "100%",
-    borderRadius: "14px",
-    border: "1px solid rgba(255,255,255,0.12)",
-    background: "rgba(255,255,255,0.03)",
-    color: "#f8f7f2",
-    padding: "12px 14px",
-    outline: "none"
-  };
+  var renderArtwork = (options) => options.imageUrl ? h("img", {
+    src: options.imageUrl,
+    alt: options.title,
+    className: options.className
+  }) : h(
+    "div",
+    {
+      className: `${options.className} together-artwork--fallback`
+    },
+    options.fallback
+  );
+  var renderParticipantSummary = (participant, isSelf, presence) => h(
+    "li",
+    {
+      key: participant.memberId,
+      className: "together-member-chip"
+    },
+    participant.avatarUrl ? h("img", {
+      src: participant.avatarUrl,
+      alt: participant.name,
+      className: "together-member-chip__avatar-image"
+    }) : h("div", { className: "together-member-chip__avatar" }, getInitials(participant.name)),
+    h(
+      "div",
+      { className: "together-member-chip__body" },
+      h(
+        "strong",
+        { className: "together-member-chip__name" },
+        participant.name,
+        isSelf ? " (voc\xEA)" : ""
+      ),
+      h(
+        "span",
+        { className: `together-member-chip__meta is-${presence}` },
+        presence === "online" ? "online" : presence === "connecting" ? "conectando" : "offline",
+        " \u2022 ",
+        formatRelativeTime(participant.joinedAt)
+      )
+    )
+  );
+  var renderQueueRow = (item, index, addedByName, onRemove) => h(
+    "li",
+    {
+      key: item.id,
+      className: "together-queue-row"
+    },
+    h("span", { className: "together-queue-row__index" }, `${index + 1}`),
+    h(
+      "div",
+      { className: "together-queue-row__track" },
+      renderArtwork({
+        imageUrl: item.imageUrl,
+        title: item.title,
+        fallback: getInitials(item.title),
+        className: "together-queue-row__art"
+      }),
+      h(
+        "div",
+        { className: "together-queue-row__copy" },
+        h("strong", { className: "together-queue-row__title" }, item.title),
+        h("span", { className: "together-queue-row__artist" }, item.artist)
+      )
+    ),
+    h("span", { className: "together-queue-row__added" }, addedByName ?? "algu\xE9m"),
+    h("span", { className: "together-queue-row__duration" }, formatDuration(item.durationMs)),
+    h(
+      "button",
+      {
+        className: "together-icon-button together-icon-button--danger",
+        onClick: () => onRemove(item.id)
+      },
+      "x"
+    )
+  );
+  var renderActivity = (activity) => h(
+    "li",
+    {
+      key: activity.id,
+      className: "together-log-item"
+    },
+    h("p", { className: "together-log-item__text" }, activity.description),
+    h(
+      "div",
+      { className: "together-log-item__meta" },
+      h("span", null, activity.actorName),
+      h("span", null, formatRelativeTime(activity.createdAt))
+    )
+  );
   var TogetherApp = () => {
     const state = useAppState();
     const [backendDraft, setBackendDraft] = useState(state.backendBaseUrl);
-    const [displayNameDraft, setDisplayNameDraft] = useState(state.displayName);
     const [roomCodeDraft, setRoomCodeDraft] = useState("");
     const [clock, setClock] = useState(Date.now());
     useEffect(() => {
       ensureControllers();
-      syncDisplayNameFromSpotify();
+      void syncProfileFromSpotify();
     }, []);
     useEffect(() => setBackendDraft(state.backendBaseUrl), [state.backendBaseUrl]);
-    useEffect(() => setDisplayNameDraft(state.displayName), [state.displayName]);
     useEffect(() => {
-      const interval = setInterval(() => setClock(Date.now()), 1e3);
+      const interval = setInterval(() => setClock(Date.now()), 250);
       return () => clearInterval(interval);
     }, []);
+    const currentTrack = state.playback.currentTrack;
+    const localTrackUri = Spicetify?.Player?.data?.item?.uri ?? null;
     const derivedPosition = useMemo(() => {
       if (!state.playback.isPlaying) {
         return state.playback.positionMs;
@@ -824,336 +1005,149 @@ var TogetherBundle = (() => {
       const duration = state.playback.currentTrack?.durationMs ?? Number.MAX_SAFE_INTEGER;
       return clamp(state.playback.positionMs + elapsed, 0, duration);
     }, [clock, state.playback]);
-    const connectionLabel = state.connectionStatus === "connected" ? "socket ativo" : state.connectionStatus === "connecting" ? "conectando" : state.connectionStatus === "error" ? "erro" : "ocioso";
-    const currentTrack = state.playback.currentTrack;
+    const displayPosition = currentTrack?.durationMs && currentTrack.trackUri === localTrackUri ? clamp(Spicetify?.Player?.getProgress?.() ?? derivedPosition, 0, currentTrack.durationMs) : derivedPosition;
+    const progressRatio = currentTrack?.durationMs ? clamp(displayPosition / currentTrack.durationMs, 0, 1) : 0;
+    const connectedCount = state.participants.filter((participant) => {
+      const isSelf = participant.memberId === state.memberId;
+      return resolveParticipantPresence(participant, {
+        isSelf,
+        socketConnected: state.socketConnected,
+        connectionStatus: state.connectionStatus
+      }) !== "offline";
+    }).length;
+    const participantNameById = useMemo(
+      () => Object.fromEntries(state.participants.map((participant) => [participant.memberId, participant.name])),
+      [state.participants]
+    );
+    const nextUpTrack = state.queue[0] ?? null;
+    const copyRoomCode = async () => {
+      if (!state.roomCode) {
+        notify("Crie ou entre em uma sala antes de copiar o c\xF3digo.", "info");
+        return;
+      }
+      try {
+        await navigator.clipboard?.writeText(state.roomCode);
+        notify("C\xF3digo da sala copiado.", "success");
+      } catch {
+        notify("N\xE3o foi poss\xEDvel copiar o c\xF3digo.", "error");
+      }
+    };
     return h(
       "section",
-      {
-        style: {
-          minHeight: "100%",
-          color: "#f8f7f2",
-          background: "radial-gradient(circle at top left, rgba(210,164,78,0.14), transparent 28%), linear-gradient(180deg, #090b10 0%, #0f1419 100%)",
-          padding: "28px 32px 40px",
-          fontFamily: '"Segoe UI", sans-serif'
-        }
-      },
+      { className: "together-shell" },
       h(
         "div",
-        {
-          style: {
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: "24px",
-            marginBottom: "24px"
-          }
-        },
+        { className: "together-dashboard" },
         h(
           "div",
-          null,
+          { className: "together-column together-column--main" },
           h(
-            "div",
-            { style: { ...pillStyle("rgba(233, 194, 111, 0.12)"), color: "#f0d49c", marginBottom: "12px" } },
-            "together",
-            h("span", { style: { opacity: 0.6 } }, "authoritative sync")
-          ),
-          h(
-            "h1",
-            {
-              style: {
-                margin: 0,
-                fontSize: "40px",
-                lineHeight: 1.05,
-                letterSpacing: "-0.04em"
-              }
-            },
-            "Escutem a mesma faixa,",
-            h("br"),
-            "na mesma sala."
-          ),
-          h(
-            "p",
-            {
-              style: {
-                marginTop: "12px",
-                maxWidth: "760px",
-                color: "rgba(248,247,242,0.72)",
-                fontSize: "15px",
-                lineHeight: 1.6
-              }
-            },
-            "Cliente Spicetify refeito do zero e sincronizado por um backend Nest em mem\xF3ria RAM. O servidor decide estado, fila e ordem final dos comandos."
-          )
-        ),
-        h(
-          "div",
-          { style: { display: "flex", flexDirection: "column", gap: "10px", alignItems: "flex-end" } },
-          h(
-            "div",
-            { style: pillStyle(state.socketConnected ? "rgba(41, 124, 68, 0.26)" : "rgba(106, 106, 106, 0.2)") },
-            connectionLabel
-          ),
-          state.roomCode ? h(
-            "div",
-            { style: { color: "rgba(248,247,242,0.76)", fontSize: "13px" } },
-            "Sala ",
-            h("strong", { style: { color: "#ffffff" } }, state.roomCode)
-          ) : null
-        )
-      ),
-      h(
-        "div",
-        {
-          style: {
-            display: "grid",
-            gridTemplateColumns: "minmax(280px, 360px) minmax(280px, 360px) minmax(320px, 1fr)",
-            gap: "18px",
-            alignItems: "start"
-          }
-        },
-        h(
-          "div",
-          { style: sectionStyle },
-          h("h2", { style: { marginTop: 0, marginBottom: "14px", fontSize: "18px" } }, "Servidor"),
-          h("label", { style: { display: "block", marginBottom: "8px", fontSize: "13px", color: "rgba(248,247,242,0.72)" } }, "Base URL"),
-          h("input", {
-            value: backendDraft,
-            onChange: (event) => setBackendDraft(event.target.value),
-            style: inputStyle
-          }),
-          h("div", { style: { height: "12px" } }),
-          h("label", { style: { display: "block", marginBottom: "8px", fontSize: "13px", color: "rgba(248,247,242,0.72)" } }, "Seu nome"),
-          h("input", {
-            value: displayNameDraft,
-            onChange: (event) => setDisplayNameDraft(event.target.value),
-            style: inputStyle
-          }),
-          h(
-            "div",
-            { style: { display: "flex", gap: "10px", marginTop: "14px" } },
+            "section",
+            { className: "together-panel together-panel--playback" },
             h(
-              "button",
-              {
-                style: { ...baseButtonStyle, ...buttonStyle("primary") },
-                onClick: () => {
-                  updateBackendBaseUrl(backendDraft);
-                  updateDisplayName(displayNameDraft);
-                  notify("Configura\xE7\xE3o salva.", "success");
-                }
-              },
-              "Salvar"
-            ),
-            h(
-              "button",
-              {
-                style: { ...baseButtonStyle, ...buttonStyle("ghost") },
-                onClick: () => reconnectRoom()
-              },
-              "Reconectar"
-            )
-          ),
-          state.connectionError ? h(
-            "p",
-            {
-              style: {
-                marginBottom: 0,
-                marginTop: "14px",
-                color: "#ffb4b4",
-                fontSize: "12px"
-              }
-            },
-            state.connectionError
-          ) : null
-        ),
-        h(
-          "div",
-          { style: sectionStyle },
-          h("h2", { style: { marginTop: 0, marginBottom: "14px", fontSize: "18px" } }, "Sess\xE3o"),
-          h(
-            "div",
-            { style: { display: "flex", gap: "10px", marginBottom: "12px" } },
-            h(
-              "button",
-              {
-                style: { ...baseButtonStyle, ...buttonStyle("primary"), flex: 1 },
-                onClick: createRoom
-              },
-              "Criar sala"
-            ),
-            h(
-              "button",
-              {
-                style: { ...baseButtonStyle, ...buttonStyle("danger") },
-                onClick: leaveRoom
-              },
-              "Sair"
-            )
-          ),
-          h("label", { style: { display: "block", marginBottom: "8px", fontSize: "13px", color: "rgba(248,247,242,0.72)" } }, "C\xF3digo da sala"),
-          h("input", {
-            value: roomCodeDraft,
-            onChange: (event) => setRoomCodeDraft(event.target.value.toUpperCase()),
-            style: inputStyle
-          }),
-          h(
-            "button",
-            {
-              style: { ...baseButtonStyle, ...buttonStyle("ghost"), width: "100%", marginTop: "12px" },
-              onClick: () => joinRoom(roomCodeDraft)
-            },
-            "Entrar na sala"
-          ),
-          h(
-            "div",
-            {
-              style: {
-                marginTop: "18px",
-                padding: "14px",
-                borderRadius: "14px",
-                background: "rgba(255,255,255,0.03)"
-              }
-            },
-            h("div", { style: { fontSize: "12px", textTransform: "uppercase", letterSpacing: "0.08em", color: "rgba(248,247,242,0.48)" } }, "Participantes"),
-            h(
-              "ul",
-              { style: { listStyle: "none", padding: 0, margin: "10px 0 0 0", display: "grid", gap: "10px" } },
-              state.participants.length ? state.participants.map(
-                (participant) => h(
-                  "li",
-                  {
-                    key: participant.memberId,
-                    style: {
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      paddingBottom: "8px",
-                      borderBottom: "1px solid rgba(255,255,255,0.05)"
-                    }
-                  },
-                  h(
-                    "span",
-                    null,
-                    participant.name,
-                    participant.memberId === state.memberId ? " (voc\xEA)" : ""
-                  ),
-                  h(
-                    "span",
-                    {
-                      style: pillStyle(participant.isConnected ? "rgba(41, 124, 68, 0.26)" : "rgba(100, 100, 100, 0.2)")
-                    },
-                    participant.isConnected ? "online" : "offline"
-                  )
-                )
-              ) : h("li", { style: { color: "rgba(248,247,242,0.55)" } }, "Nenhum participante conectado.")
-            )
-          )
-        ),
-        h(
-          "div",
-          { style: { display: "grid", gap: "18px" } },
-          h(
-            "div",
-            { style: sectionStyle },
-            h("h2", { style: { marginTop: 0, marginBottom: "16px", fontSize: "18px" } }, "Playback da sala"),
-            currentTrack ? h(
               "div",
-              {
-                style: {
-                  display: "grid",
-                  gridTemplateColumns: currentTrack.imageUrl ? "84px 1fr" : "1fr",
-                  gap: "16px",
-                  alignItems: "center"
-                }
-              },
-              currentTrack.imageUrl ? h("img", {
-                src: currentTrack.imageUrl,
-                alt: currentTrack.title,
-                style: { width: "84px", height: "84px", borderRadius: "14px", objectFit: "cover" }
-              }) : null,
+              { className: "together-playback-card" },
+              renderArtwork({
+                imageUrl: currentTrack?.imageUrl ?? null,
+                title: currentTrack?.title ?? "Nenhuma faixa",
+                fallback: currentTrack ? getInitials(currentTrack.title) : "TG",
+                className: "together-playback-card__art"
+              }),
               h(
                 "div",
-                null,
-                h("div", { style: { fontSize: "24px", fontWeight: 700, letterSpacing: "-0.03em" } }, currentTrack.title),
+                { className: "together-playback-card__body" },
+                h("h1", { className: "together-playback-card__title" }, currentTrack?.title ?? "Nenhuma faixa sincronizada"),
                 h(
-                  "div",
-                  { style: { color: "rgba(248,247,242,0.72)", marginTop: "4px" } },
-                  currentTrack.artist,
-                  currentTrack.album ? ` \u2022 ${currentTrack.album}` : ""
+                  "p",
+                  { className: "together-playback-card__artist" },
+                  currentTrack ? `${currentTrack.artist}${currentTrack.album ? ` \u2022 ${currentTrack.album}` : ""}` : "Crie uma sala ou entre em uma sess\xE3o para sincronizar."
                 ),
                 h(
                   "div",
-                  {
-                    style: {
-                      display: "flex",
-                      gap: "12px",
-                      marginTop: "12px",
-                      alignItems: "center"
-                    }
-                  },
-                  h(
-                    "div",
-                    {
-                      style: pillStyle(state.playback.isPlaying ? "rgba(41, 124, 68, 0.26)" : "rgba(155, 117, 42, 0.22)")
-                    },
-                    state.playback.isPlaying ? "tocando" : "pausado"
-                  ),
-                  h(
-                    "div",
-                    {
-                      style: {
-                        color: "rgba(248,247,242,0.72)",
-                        fontFeatureSettings: '"tnum"'
-                      }
-                    },
-                    formatDuration(derivedPosition),
-                    " / ",
-                    formatDuration(currentTrack.durationMs)
-                  )
+                  { className: "together-playback-card__progress" },
+                  h("div", {
+                    className: "together-playback-card__progress-bar",
+                    style: { width: `${progressRatio * 100}%` }
+                  })
+                ),
+                h(
+                  "div",
+                  { className: "together-playback-card__meta" },
+                  h("span", null, currentTrack ? formatDuration(displayPosition) : "--:--"),
+                  h("span", null, currentTrack ? formatDuration(currentTrack.durationMs) : "--:--")
                 )
               )
-            ) : h(
+            ),
+            h(
               "div",
-              {
-                style: {
-                  padding: "18px",
-                  borderRadius: "14px",
-                  background: "rgba(255,255,255,0.03)",
-                  color: "rgba(248,247,242,0.6)"
-                }
-              },
-              "Nenhuma faixa sincronizada ainda. Toque uma m\xFAsica e crie a sala, ou entre em uma sess\xE3o existente."
+              { className: "together-next-up" },
+              h("span", { className: "together-panel__label" }, "A seguir"),
+              nextUpTrack ? h(
+                "div",
+                { className: "together-next-up__track" },
+                renderArtwork({
+                  imageUrl: nextUpTrack.imageUrl,
+                  title: nextUpTrack.title,
+                  fallback: getInitials(nextUpTrack.title),
+                  className: "together-next-up__art"
+                }),
+                h(
+                  "div",
+                  { className: "together-next-up__copy" },
+                  h("strong", { className: "together-next-up__title" }, nextUpTrack.title),
+                  h("span", { className: "together-next-up__artist" }, nextUpTrack.artist)
+                )
+              ) : h("span", { className: "together-next-up__empty" }, "Fila vazia")
             )
           ),
           h(
-            "div",
-            { style: sectionStyle },
+            "section",
+            { className: "together-panel together-panel--members" },
             h(
               "div",
-              {
-                style: {
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: "12px",
-                  marginBottom: "14px"
-                }
-              },
-              h("h2", { style: { margin: 0, fontSize: "18px" } }, "Fila compartilhada"),
+              { className: "together-panel__header" },
+              h("h2", { className: "together-panel__title" }, "Conectados"),
+              h("span", { className: "together-panel__count" }, `${connectedCount}/${state.participants.length || 0}`)
+            ),
+            state.participants.length ? h(
+              "ul",
+              { className: "together-member-list" },
+              state.participants.map((participant) => {
+                const isSelf = participant.memberId === state.memberId;
+                return renderParticipantSummary(
+                  participant,
+                  isSelf,
+                  resolveParticipantPresence(participant, {
+                    isSelf,
+                    socketConnected: state.socketConnected,
+                    connectionStatus: state.connectionStatus
+                  })
+                );
+              })
+            ) : h("div", { className: "together-empty" }, "Nenhum participante")
+          ),
+          h(
+            "section",
+            { className: "together-panel together-panel--queue" },
+            h(
+              "div",
+              { className: "together-panel__header" },
+              h("h2", { className: "together-panel__title" }, "Fila"),
               h(
                 "div",
-                { style: { display: "flex", gap: "10px" } },
+                { className: "together-panel__actions" },
                 h(
                   "button",
                   {
-                    style: { ...baseButtonStyle, ...buttonStyle("ghost") },
+                    className: "together-button together-button--ghost",
                     onClick: addCurrentTrackToQueue
                   },
-                  "Adicionar faixa atual"
+                  "Adicionar atual"
                 ),
                 h(
                   "button",
                   {
-                    style: { ...baseButtonStyle, ...buttonStyle("primary") },
+                    className: "together-button together-button--primary",
                     onClick: skipNextQueuedTrack
                   },
                   "Puxar pr\xF3xima"
@@ -1161,102 +1155,143 @@ var TogetherBundle = (() => {
               )
             ),
             h(
+              "div",
+              { className: "together-queue-head" },
+              h("span", null, "#"),
+              h("span", null, "T\xEDtulo"),
+              h("span", null, "Adicionado por"),
+              h("span", null, "Dur."),
+              h("span", null, "")
+            ),
+            state.queue.length ? h(
               "ul",
-              { style: { listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "12px" } },
-              state.queue.length ? state.queue.map(
-                (item, index) => h(
-                  "li",
-                  {
-                    key: item.id,
-                    style: {
-                      display: "grid",
-                      gridTemplateColumns: item.imageUrl ? "52px 1fr auto" : "1fr auto",
-                      gap: "12px",
-                      alignItems: "center",
-                      padding: "12px",
-                      borderRadius: "14px",
-                      background: "rgba(255,255,255,0.03)",
-                      border: "1px solid rgba(255,255,255,0.04)"
-                    }
-                  },
-                  item.imageUrl ? h("img", {
-                    src: item.imageUrl,
-                    alt: item.title,
-                    style: { width: "52px", height: "52px", borderRadius: "12px", objectFit: "cover" }
-                  }) : null,
-                  h(
-                    "div",
-                    null,
-                    h(
-                      "div",
-                      { style: { fontSize: "12px", color: "rgba(248,247,242,0.45)", marginBottom: "4px" } },
-                      `#${index + 1}`
-                    ),
-                    h("div", { style: { fontWeight: 700 } }, item.title),
-                    h(
-                      "div",
-                      { style: { color: "rgba(248,247,242,0.68)", fontSize: "13px", marginTop: "2px" } },
-                      item.artist
-                    )
-                  ),
-                  h(
-                    "button",
-                    {
-                      style: { ...baseButtonStyle, ...buttonStyle("danger"), padding: "9px 11px" },
-                      onClick: () => removeQueueItem(item.id)
-                    },
-                    "Remover"
-                  )
-                )
-              ) : h(
-                "li",
+              { className: "together-queue-list" },
+              state.queue.map(
+                (item, index) => renderQueueRow(item, index, participantNameById[item.addedBy], removeQueueItem)
+              )
+            ) : h("div", { className: "together-empty together-empty--queue" }, "Nenhuma faixa na fila")
+          )
+        ),
+        h(
+          "div",
+          { className: "together-column together-column--session" },
+          h(
+            "section",
+            { className: "together-panel together-panel--session" },
+            h(
+              "div",
+              { className: "together-panel__header" },
+              h("h2", { className: "together-panel__title together-panel__title--brand" }, "Together"),
+              h(
+                "span",
                 {
-                  style: {
-                    padding: "18px",
-                    borderRadius: "14px",
-                    background: "rgba(255,255,255,0.03)",
-                    color: "rgba(248,247,242,0.6)"
+                  className: `together-session-badge ${state.socketConnected ? "is-online" : state.connectionStatus === "connecting" ? "is-busy" : "is-offline"}`
+                },
+                state.socketConnected ? "Conectado" : state.connectionStatus === "connecting" ? "Conectando" : "Offline"
+              )
+            ),
+            h(
+              "div",
+              { className: "together-session-copy" },
+              h(
+                "p",
+                null,
+                state.roomCode ? "Compartilhe o c\xF3digo da sala para sincronizar com outras pessoas." : "Crie uma nova sala ou entre usando o c\xF3digo. Seu nome do Spotify ser\xE1 usado automaticamente."
+              )
+            ),
+            h(
+              "label",
+              { className: "together-field" },
+              h("span", { className: "together-field__label" }, "C\xF3digo da sala"),
+              h("input", {
+                value: roomCodeDraft,
+                onChange: (event) => setRoomCodeDraft(event.target.value.toUpperCase()),
+                placeholder: "ID do amigo",
+                className: "together-input"
+              })
+            ),
+            h(
+              "div",
+              { className: "together-session-actions" },
+              h(
+                "button",
+                {
+                  className: "together-button together-button--primary together-button--wide",
+                  onClick: () => {
+                    if (roomCodeDraft.trim()) {
+                      joinRoom(roomCodeDraft);
+                      return;
+                    }
+                    createRoom();
                   }
                 },
-                "A fila da sess\xE3o est\xE1 vazia. Adicione a m\xFAsica atual de qualquer participante."
+                roomCodeDraft.trim() ? "Conectar" : "Criar sala"
+              ),
+              h(
+                "button",
+                {
+                  className: "together-button together-button--ghost",
+                  onClick: () => {
+                    createRoom();
+                  }
+                },
+                "Nova sala"
               )
-            )
+            ),
+            h(
+              "div",
+              { className: "together-mini-actions" },
+              h(
+                "button",
+                {
+                  className: "together-mini-button",
+                  onClick: copyRoomCode
+                },
+                "Copiar c\xF3digo"
+              ),
+              h(
+                "button",
+                {
+                  className: "together-mini-button",
+                  onClick: reconnectRoom
+                },
+                "Reconectar"
+              ),
+              h(
+                "button",
+                {
+                  className: "together-mini-button together-mini-button--danger",
+                  onClick: leaveRoom
+                },
+                "Sair"
+              )
+            ),
+            h(
+              "label",
+              { className: "together-field together-field--compact" },
+              h("span", { className: "together-field__label" }, "Servidor"),
+              h("input", {
+                value: backendDraft,
+                onChange: (event) => setBackendDraft(event.target.value),
+                onBlur: () => updateBackendBaseUrl(backendDraft),
+                className: "together-input together-input--compact"
+              })
+            ),
+            state.connectionError ? h("p", { className: "together-error" }, state.connectionError) : null
+          ),
+          h(
+            "section",
+            { className: "together-panel together-panel--logs" },
+            h(
+              "div",
+              { className: "together-panel__header" },
+              h("h2", { className: "together-panel__title" }, "\xDAltimas a\xE7\xF5es"),
+              h("span", { className: "together-panel__count" }, `${state.activityLog.length}`)
+            ),
+            state.activityLog.length ? h("ul", { className: "together-log-list" }, state.activityLog.map(renderActivity)) : h("div", { className: "together-empty together-empty--logs" }, "Nenhum registro")
           )
         )
-      ),
-      state.notifications.length ? h(
-        "div",
-        {
-          style: {
-            position: "fixed",
-            right: "24px",
-            bottom: "24px",
-            display: "grid",
-            gap: "10px",
-            width: "320px",
-            zIndex: 10
-          }
-        },
-        state.notifications.map(
-          (notice) => h(
-            "button",
-            {
-              key: notice.id,
-              onClick: () => dismissNotice(notice.id),
-              style: {
-                textAlign: "left",
-                border: "none",
-                cursor: "pointer",
-                borderRadius: "14px",
-                padding: "12px 14px",
-                color: "#fff",
-                background: notice.kind === "error" ? "rgba(145, 45, 45, 0.94)" : notice.kind === "success" ? "rgba(41, 124, 68, 0.94)" : "rgba(18, 20, 27, 0.94)"
-              }
-            },
-            notice.message
-          )
-        )
-      ) : null
+      )
     );
   };
   function render() {

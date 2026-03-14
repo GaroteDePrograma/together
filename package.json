@@ -1,0 +1,16 @@
+{
+  "name": "together-spicetify-app",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "node ./scripts/build-client.mjs",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.2",
+    "esbuild": "^0.25.10",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
