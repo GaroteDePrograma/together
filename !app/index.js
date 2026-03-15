@@ -79,6 +79,7 @@ var TogetherBundle = (() => {
   var safePlayerIsPlaying = () => Boolean(Spicetify?.Player?.isPlaying?.());
   var AUTO_PULL_END_TOLERANCE_MS = 2500;
   var AUTO_PULL_NEXT_TRACK_PROGRESS_MAX_MS = 3e3;
+  var AUTO_PULL_PROGRESS_TRIGGER_MS = 900;
   var buildTrackSummary = (playerItem) => {
     if (!playerItem?.uri) {
       return null;
@@ -135,6 +136,17 @@ var TogetherBundle = (() => {
     return remainingMs <= AUTO_PULL_END_TOLERANCE_MS && nextProgressMs <= AUTO_PULL_NEXT_TRACK_PROGRESS_MAX_MS;
   };
   var isImmediateNextTrack = (nextTracks, targetTrackUri) => nextTracks?.[0]?.uri === targetTrackUri;
+  var shouldRequestQueuedAdvanceFromProgress = (options) => {
+    const { currentTrack, localTrackUri, queueLength, currentProgressMs } = options;
+    if (!currentTrack || queueLength < 1 || currentTrack.durationMs <= 0) {
+      return false;
+    }
+    if (localTrackUri !== currentTrack.trackUri) {
+      return false;
+    }
+    const remainingMs = currentTrack.durationMs - currentProgressMs;
+    return remainingMs <= AUTO_PULL_PROGRESS_TRIGGER_MS;
+  };
   var TogetherPlayerBridge = class {
     store;
     getActorId;
@@ -145,6 +157,7 @@ var TogetherBundle = (() => {
     lastProgressSampleMs = 0;
     lastProgressSampleAt = Date.now();
     lastAppliedPlaybackVersion = 0;
+    autoAdvanceRequestedTrackUri = null;
     suppressedUntil = {
       songchange: 0,
       playpause: 0,
@@ -241,11 +254,22 @@ var TogetherBundle = (() => {
     handleProgress = () => {
       const currentProgress = safePlayerProgress();
       const now = Date.now();
+      const state = this.store.getState();
       if (!this.isSuppressed("progress")) {
         if (shouldPublishSeek(this.lastProgressSampleMs, currentProgress, now - this.lastProgressSampleAt)) {
           this.emitCommand("SEEK", {
             positionMs: currentProgress
           });
+        }
+        const currentTrack = state.playback.currentTrack;
+        if (currentTrack && this.autoAdvanceRequestedTrackUri !== currentTrack.trackUri && shouldRequestQueuedAdvanceFromProgress({
+          currentTrack,
+          localTrackUri: Spicetify?.Player?.data?.item?.uri ?? null,
+          queueLength: state.queue.length,
+          currentProgressMs: currentProgress
+        })) {
+          this.autoAdvanceRequestedTrackUri = currentTrack.trackUri;
+          this.requestQueueAdvance(currentTrack.trackUri);
         }
       }
       this.lastProgressSampleMs = currentProgress;
@@ -257,6 +281,9 @@ var TogetherBundle = (() => {
       }
       this.lastAppliedPlaybackVersion = playback.version;
       this.suppressAll(2e3);
+      if (!playback.currentTrack || playback.currentTrack.trackUri !== this.autoAdvanceRequestedTrackUri || playback.positionMs < playback.currentTrack.durationMs - AUTO_PULL_PROGRESS_TRIGGER_MS) {
+        this.autoAdvanceRequestedTrackUri = null;
+      }
       const targetTrack = playback.currentTrack;
       const currentTrackUri = Spicetify?.Player?.data?.item?.uri ?? null;
       if (targetTrack?.trackUri && currentTrackUri !== targetTrack.trackUri) {

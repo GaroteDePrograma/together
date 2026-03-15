@@ -4,6 +4,7 @@ import {
   buildTrackSummary,
   estimatePlaybackPositionMs,
   isImmediateNextTrack,
+  shouldRequestQueuedAdvanceFromProgress,
   shouldAutoPullQueuedTrack,
   shouldPublishSeek
 } from "./player";
@@ -123,5 +124,38 @@ describe("isImmediateNextTrack", () => {
       )
     ).toBe(false);
     expect(isImmediateNextTrack([{ uri: "spotify:track:right-next" }], "spotify:track:right-next")).toBe(true);
+  });
+});
+
+describe("shouldRequestQueuedAdvanceFromProgress", () => {
+  const currentTrack = {
+    trackUri: "spotify:track:queue-b",
+    title: "Queue B",
+    artist: "Artist",
+    album: "Album",
+    imageUrl: null,
+    durationMs: 120000
+  };
+
+  it("requests the next together track near the end even without songchange", () => {
+    expect(
+      shouldRequestQueuedAdvanceFromProgress({
+        currentTrack,
+        localTrackUri: "spotify:track:queue-b",
+        queueLength: 1,
+        currentProgressMs: 119300
+      })
+    ).toBe(true);
+  });
+
+  it("does not request when there is no pending together queue", () => {
+    expect(
+      shouldRequestQueuedAdvanceFromProgress({
+        currentTrack,
+        localTrackUri: "spotify:track:queue-b",
+        queueLength: 0,
+        currentProgressMs: 119300
+      })
+    ).toBe(false);
   });
 });
