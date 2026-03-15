@@ -1,0 +1,101 @@
+name: Release Custom App
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build release bundle
+        run: npm run build
+
+      - name: Prepare release metadata
+        id: meta
+        shell: bash
+        run: |
+          VERSION=$(node -e "console.log(JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version)")
+          TAG="v${VERSION}-main.${GITHUB_RUN_NUMBER}"
+          RELEASE_NAME="Together ${VERSION} (main build ${GITHUB_RUN_NUMBER})"
+          ARCHIVE_NAME="together-spicetify-app-${VERSION}-main.${GITHUB_RUN_NUMBER}.zip"
+
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "release_name=${RELEASE_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "archive_name=${ARCHIVE_NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Package installable app
+        shell: bash
+        run: |
+          rm -rf release
+          mkdir -p release/together
+          cp -R './!app/.' release/together/
+          cat > release/together/INSTALL.txt <<'EOF'
+          Together for Spicetify
+
+          Installation:
+          1. Extract the "together" folder into your Spicetify CustomApps directory.
+             Windows: %APPDATA%\spicetify\CustomApps
+             macOS: ~/.config/spicetify/CustomApps
+             Linux: ~/.config/spicetify/CustomApps
+          2. Run:
+             spicetify config custom_apps together
+             spicetify apply
+          EOF
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZIP_DEFLATED, ZipFile
+
+          release_dir = Path("release")
+          archive_path = release_dir / "${{ steps.meta.outputs.archive_name }}"
+          source_dir = release_dir / "together"
+
+          with ZipFile(archive_path, "w", ZIP_DEFLATED) as archive:
+            for path in source_dir.rglob("*"):
+              archive.write(path, path.relative_to(release_dir))
+          PY
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.archive_name }}
+          path: release/${{ steps.meta.outputs.archive_name }}
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.release_name }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          body: |
+            Ready-to-install Spicetify build for Together.
+
+            Download the ZIP asset, extract the `together` folder, and place it in your Spicetify `CustomApps` directory.
+
+            After copying the folder, run:
+            `spicetify config custom_apps together`
+            `spicetify apply`
+          files: release/${{ steps.meta.outputs.archive_name }}
