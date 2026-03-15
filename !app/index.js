@@ -118,6 +118,10 @@ var TogetherBundle = (() => {
     const observedDelta = Math.abs(nextPositionMs - previousPositionMs - elapsedMs);
     return observedDelta > toleranceMs;
   };
+  var estimatePlaybackPositionMs = (options) => {
+    const elapsedMs = options.isPlaying ? Math.max(0, options.nowMs - options.sampledAtMs) : 0;
+    return clamp(options.sampledProgressMs + elapsedMs, 0, options.durationMs ?? Number.MAX_SAFE_INTEGER);
+  };
   var shouldAutoPullQueuedTrack = (options) => {
     const { previousTrack, nextTrack, queueLength, previousProgressMs, nextProgressMs } = options;
     if (!previousTrack || !nextTrack || queueLength < 1) {
@@ -129,6 +133,7 @@ var TogetherBundle = (() => {
     const remainingMs = previousTrack.durationMs - previousProgressMs;
     return remainingMs <= AUTO_PULL_END_TOLERANCE_MS && nextProgressMs <= AUTO_PULL_NEXT_TRACK_PROGRESS_MAX_MS;
   };
+  var isImmediateNextTrack = (nextTracks, targetTrackUri) => nextTracks?.[0]?.uri === targetTrackUri;
   var TogetherPlayerBridge = class {
     store;
     getActorId;
@@ -184,9 +189,11 @@ var TogetherBundle = (() => {
       this.sendPlaybackCommand(buildPlaybackCommand(type, actorId, options));
     }
     handleSongChange = () => {
+      const now = Date.now();
       const previousProgressMs = this.lastProgressSampleMs;
+      const previousProgressSampleAt = this.lastProgressSampleAt;
       const nextProgressMs = safePlayerProgress();
-      this.lastProgressSampleAt = Date.now();
+      this.lastProgressSampleAt = now;
       this.lastProgressSampleMs = nextProgressMs;
       if (this.isSuppressed("songchange")) {
         return;
@@ -197,11 +204,18 @@ var TogetherBundle = (() => {
       if (!track) {
         return;
       }
+      const estimatedPreviousProgressMs = estimatePlaybackPositionMs({
+        sampledProgressMs: previousProgressMs,
+        sampledAtMs: previousProgressSampleAt,
+        nowMs: now,
+        isPlaying: state.playback.isPlaying,
+        durationMs: previousTrack?.durationMs
+      });
       if (previousTrack && shouldAutoPullQueuedTrack({
         previousTrack,
         nextTrack: track,
         queueLength: state.queue.length,
-        previousProgressMs,
+        previousProgressMs: estimatedPreviousProgressMs,
         nextProgressMs
       })) {
         this.requestQueueAdvance(previousTrack.trackUri);
@@ -244,7 +258,7 @@ var TogetherBundle = (() => {
       const targetTrack = playback.currentTrack;
       const currentTrackUri = Spicetify?.Player?.data?.item?.uri ?? null;
       if (targetTrack?.trackUri && currentTrackUri !== targetTrack.trackUri) {
-        if (Spicetify?.Platform?.PlayerAPI?.skipToNext && Spicetify?.Queue?.nextTracks?.some((t) => t.uri === targetTrack.trackUri)) {
+        if (Spicetify?.Platform?.PlayerAPI?.skipToNext && isImmediateNextTrack(Spicetify?.Queue?.nextTracks, targetTrack.trackUri)) {
           await Spicetify.Player.skipToNext();
         } else {
           await Spicetify.Player.playUri(targetTrack.trackUri);

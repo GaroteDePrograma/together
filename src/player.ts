@@ -1,6 +1,6 @@
 import type { AppStore } from "./state";
 import type { InitialPlaybackStateInput, PlaybackCommand, PlaybackCommandType, PlaybackState, SessionTrack } from "./protocol";
-import { SEEK_DETECTION_TOLERANCE_MS, SEEK_SYNC_THRESHOLD_MS, createId, wait } from "./utils";
+import { SEEK_DETECTION_TOLERANCE_MS, SEEK_SYNC_THRESHOLD_MS, clamp, createId, wait } from "./utils";
 
 const safePlayerProgress = () => Spicetify?.Player?.getProgress?.() ?? 0;
 const safePlayerIsPlaying = () => Boolean(Spicetify?.Player?.isPlaying?.());
@@ -66,6 +66,17 @@ export const shouldPublishSeek = (
   return observedDelta > toleranceMs;
 };
 
+export const estimatePlaybackPositionMs = (options: {
+  sampledProgressMs: number;
+  sampledAtMs: number;
+  nowMs: number;
+  isPlaying: boolean;
+  durationMs?: number;
+}) => {
+  const elapsedMs = options.isPlaying ? Math.max(0, options.nowMs - options.sampledAtMs) : 0;
+  return clamp(options.sampledProgressMs + elapsedMs, 0, options.durationMs ?? Number.MAX_SAFE_INTEGER);
+};
+
 export const shouldAutoPullQueuedTrack = (options: {
   previousTrack: SessionTrack | null;
   nextTrack: SessionTrack | null;
@@ -85,6 +96,11 @@ export const shouldAutoPullQueuedTrack = (options: {
   const remainingMs = previousTrack.durationMs - previousProgressMs;
   return remainingMs <= AUTO_PULL_END_TOLERANCE_MS && nextProgressMs <= AUTO_PULL_NEXT_TRACK_PROGRESS_MAX_MS;
 };
+
+export const isImmediateNextTrack = (
+  nextTracks: Array<{ uri?: string | null } | null | undefined> | null | undefined,
+  targetTrackUri: string
+) => nextTracks?.[0]?.uri === targetTrackUri;
 
 interface PlayerBridgeOptions {
   store: AppStore;
@@ -160,9 +176,11 @@ export class TogetherPlayerBridge {
   }
 
   private handleSongChange = () => {
+    const now = Date.now();
     const previousProgressMs = this.lastProgressSampleMs;
+    const previousProgressSampleAt = this.lastProgressSampleAt;
     const nextProgressMs = safePlayerProgress();
-    this.lastProgressSampleAt = Date.now();
+    this.lastProgressSampleAt = now;
     this.lastProgressSampleMs = nextProgressMs;
 
     if (this.isSuppressed("songchange")) {
@@ -176,13 +194,21 @@ export class TogetherPlayerBridge {
       return;
     }
 
+    const estimatedPreviousProgressMs = estimatePlaybackPositionMs({
+      sampledProgressMs: previousProgressMs,
+      sampledAtMs: previousProgressSampleAt,
+      nowMs: now,
+      isPlaying: state.playback.isPlaying,
+      durationMs: previousTrack?.durationMs
+    });
+
     if (
       previousTrack &&
       shouldAutoPullQueuedTrack({
         previousTrack,
         nextTrack: track,
         queueLength: state.queue.length,
-        previousProgressMs,
+        previousProgressMs: estimatedPreviousProgressMs,
         nextProgressMs
       })
     ) {
@@ -236,10 +262,13 @@ export class TogetherPlayerBridge {
     const currentTrackUri = Spicetify?.Player?.data?.item?.uri ?? null;
 
     if (targetTrack?.trackUri && currentTrackUri !== targetTrack.trackUri) {
-      if (Spicetify?.Platform?.PlayerAPI?.skipToNext && Spicetify?.Queue?.nextTracks?.some(t => t.uri === targetTrack.trackUri)) {
-         await Spicetify.Player.skipToNext();
+      if (
+        Spicetify?.Platform?.PlayerAPI?.skipToNext &&
+        isImmediateNextTrack(Spicetify?.Queue?.nextTracks, targetTrack.trackUri)
+      ) {
+        await Spicetify.Player.skipToNext();
       } else {
-         await Spicetify.Player.playUri(targetTrack.trackUri);
+        await Spicetify.Player.playUri(targetTrack.trackUri);
       }
       await wait(180);
     }

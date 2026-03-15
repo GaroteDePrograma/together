@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildPlaybackCommand, buildTrackSummary, shouldAutoPullQueuedTrack, shouldPublishSeek } from "./player";
+import {
+  buildPlaybackCommand,
+  buildTrackSummary,
+  estimatePlaybackPositionMs,
+  isImmediateNextTrack,
+  shouldAutoPullQueuedTrack,
+  shouldPublishSeek
+} from "./player";
 
 describe("buildTrackSummary", () => {
   it("maps spotify player items to a session track", () => {
@@ -49,6 +56,20 @@ describe("shouldPublishSeek", () => {
   });
 });
 
+describe("estimatePlaybackPositionMs", () => {
+  it("projects playback using elapsed wall time while the track is playing", () => {
+    expect(
+      estimatePlaybackPositionMs({
+        sampledProgressMs: 175000,
+        sampledAtMs: 10_000,
+        nowMs: 15_000,
+        isPlaying: true,
+        durationMs: 180000
+      })
+    ).toBe(180000);
+  });
+});
+
 describe("shouldAutoPullQueuedTrack", () => {
   const previousTrack = {
     trackUri: "spotify:track:butterfly",
@@ -90,5 +111,17 @@ describe("shouldAutoPullQueuedTrack", () => {
         nextProgressMs: 400
       })
     ).toBe(false);
+  });
+});
+
+describe("isImmediateNextTrack", () => {
+  it("only treats the target as skippable when it is the immediate next spotify track", () => {
+    expect(
+      isImmediateNextTrack(
+        [{ uri: "spotify:track:right-next" }, { uri: "spotify:track:queued-later" }],
+        "spotify:track:queued-later"
+      )
+    ).toBe(false);
+    expect(isImmediateNextTrack([{ uri: "spotify:track:right-next" }], "spotify:track:right-next")).toBe(true);
   });
 });
