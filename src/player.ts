@@ -45,6 +45,7 @@ export const buildPlaybackCommand = (
     track?: SessionTrack | null;
     positionMs?: number | null;
     isPlaying?: boolean | null;
+    observedPreviousTrackUri?: string | null;
   } = {}
 ): PlaybackCommand => ({
   commandId: createId("command"),
@@ -53,7 +54,8 @@ export const buildPlaybackCommand = (
   clientObservedAt: new Date().toISOString(),
   track: options.track ?? null,
   positionMs: options.positionMs ?? null,
-  isPlaying: options.isPlaying ?? null
+  isPlaying: options.isPlaying ?? null,
+  observedPreviousTrackUri: options.observedPreviousTrackUri ?? null
 });
 
 export const shouldPublishSeek = (
@@ -219,7 +221,8 @@ export class TogetherPlayerBridge {
     this.emitCommand("SET_TRACK", {
       track,
       positionMs: nextProgressMs,
-      isPlaying: safePlayerIsPlaying()
+      isPlaying: safePlayerIsPlaying(),
+      observedPreviousTrackUri: previousTrack?.trackUri ?? null
     });
   };
 

@@ -112,7 +112,8 @@ var TogetherBundle = (() => {
     clientObservedAt: (/* @__PURE__ */ new Date()).toISOString(),
     track: options.track ?? null,
     positionMs: options.positionMs ?? null,
-    isPlaying: options.isPlaying ?? null
+    isPlaying: options.isPlaying ?? null,
+    observedPreviousTrackUri: options.observedPreviousTrackUri ?? null
   });
   var shouldPublishSeek = (previousPositionMs, nextPositionMs, elapsedMs, toleranceMs = SEEK_DETECTION_TOLERANCE_MS) => {
     const observedDelta = Math.abs(nextPositionMs - previousPositionMs - elapsedMs);
@@ -224,7 +225,8 @@ var TogetherBundle = (() => {
       this.emitCommand("SET_TRACK", {
         track,
         positionMs: nextProgressMs,
-        isPlaying: safePlayerIsPlaying()
+        isPlaying: safePlayerIsPlaying(),
+        observedPreviousTrackUri: previousTrack?.trackUri ?? null
       });
     };
     handlePlayPause = () => {

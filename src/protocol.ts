@@ -107,6 +107,7 @@ export interface PlaybackCommand {
   track: SessionTrack | null;
   positionMs: number | null;
   isPlaying: boolean | null;
+  observedPreviousTrackUri?: string | null;
 }
 
 export interface BootstrapRoomResponse {
