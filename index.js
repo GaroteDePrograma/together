@@ -215,7 +215,11 @@ var TogetherBundle = (() => {
       const targetTrack = playback.currentTrack;
       const currentTrackUri = Spicetify?.Player?.data?.item?.uri ?? null;
       if (targetTrack?.trackUri && currentTrackUri !== targetTrack.trackUri) {
-        await Spicetify.Player.playUri(targetTrack.trackUri);
+        if (Spicetify?.Platform?.PlayerAPI?.skipToNext && Spicetify?.Queue?.nextTracks?.some((t) => t.uri === targetTrack.trackUri)) {
+          await Spicetify.Player.skipToNext();
+        } else {
+          await Spicetify.Player.playUri(targetTrack.trackUri);
+        }
         await wait(180);
       }
       const currentProgress = safePlayerProgress();
@@ -1259,8 +1263,24 @@ var TogetherBundle = (() => {
       h("span", null, formatRelativeTime(activity.createdAt))
     )
   );
+  var TOGETHER_VERSION = "v1.0.0-main.2";
+  var useUpdateCheck = () => {
+    const [updateUrl, setUpdateUrl] = useState(null);
+    const [newVersion, setNewVersion] = useState(null);
+    useEffect(() => {
+      fetch("https://api.github.com/repos/GaroteDePrograma/together/releases/latest").then((r) => r.json()).then((release) => {
+        if (release.tag_name && release.tag_name !== TOGETHER_VERSION && !release.draft) {
+          setUpdateUrl(release.html_url);
+          setNewVersion(release.tag_name);
+        }
+      }).catch(() => {
+      });
+    }, []);
+    return { updateUrl, newVersion };
+  };
   var TogetherApp = () => {
     const state = useAppState();
+    const { updateUrl, newVersion } = useUpdateCheck();
     const [backendDraft, setBackendDraft] = useState(state.backendBaseUrl);
     const [roomCodeDraft, setRoomCodeDraft] = useState("");
     const [clock, setClock] = useState(Date.now());
@@ -1324,6 +1344,21 @@ var TogetherBundle = (() => {
         h(
           "div",
           { className: "together-column together-column--main" },
+          updateUrl && newVersion ? h(
+            "section",
+            {
+              className: "together-panel",
+              style: { backgroundColor: "rgba(255, 100, 100, 0.2)", cursor: "pointer", marginBottom: "1rem" },
+              onClick: () => window.open(updateUrl, "_blank")
+            },
+            h(
+              "div",
+              { className: "together-panel__header", style: { borderBottom: "none", marginBottom: 0 } },
+              h("h2", { className: "together-panel__title", style: { color: "#fff" } }, `Nova vers\xE3o ${newVersion} Dispon\xEDvel!`),
+              h("span", { className: "together-panel__count", style: { color: "#fff", padding: "4px 8px", background: "rgba(255,255,255,0.2)", borderRadius: "4px" } }, "Baixar")
+            ),
+            h("p", { style: { marginTop: "4px", color: "rgba(255,255,255,0.8)" } }, "Existe uma nova vers\xE3o do Together no GitHub. Clique para abrir.")
+          ) : null,
           h(
             "section",
             { className: "together-panel together-panel--playback" },

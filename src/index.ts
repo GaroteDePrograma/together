@@ -904,8 +904,30 @@ const renderActivity = (activity: SessionActivity) =>
     )
   );
 
+const TOGETHER_VERSION = process.env.TOGETHER_VERSION || "v1.0.0-dev";
+
+const useUpdateCheck = () => {
+  const [updateUrl, setUpdateUrl] = useState<string | null>(null);
+  const [newVersion, setNewVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("https://api.github.com/repos/GaroteDePrograma/together/releases/latest")
+      .then(r => r.json())
+      .then(release => {
+        if (release.tag_name && release.tag_name !== TOGETHER_VERSION && !release.draft) {
+          setUpdateUrl(release.html_url);
+          setNewVersion(release.tag_name);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  return { updateUrl, newVersion };
+};
+
 const TogetherApp = () => {
   const state = useAppState() as ReturnType<typeof store.getState>;
+  const { updateUrl, newVersion } = useUpdateCheck();
   const [backendDraft, setBackendDraft] = useState(state.backendBaseUrl);
   const [roomCodeDraft, setRoomCodeDraft] = useState("");
   const [clock, setClock] = useState(Date.now());
@@ -981,6 +1003,23 @@ const TogetherApp = () => {
       h(
         "div",
         { className: "together-column together-column--main" },
+        updateUrl && newVersion
+          ? h(
+              "section",
+              {
+                className: "together-panel",
+                style: { backgroundColor: "rgba(255, 100, 100, 0.2)", cursor: "pointer", marginBottom: "1rem" },
+                onClick: () => window.open(updateUrl, "_blank")
+              },
+              h(
+                "div",
+                { className: "together-panel__header", style: { borderBottom: "none", marginBottom: 0 } },
+                h("h2", { className: "together-panel__title", style: { color: "#fff" } }, `Nova versão ${newVersion} Disponível!`),
+                h("span", { className: "together-panel__count", style: { color: "#fff", padding: "4px 8px", background: "rgba(255,255,255,0.2)", borderRadius: "4px" } }, "Baixar no GitHub")
+              ),
+              h("p", { style: { marginTop: "4px", color: "rgba(255,255,255,0.8)" } }, "Devido a restrições de segurança do Spotify, não é possível instalar automaticamente arquivos no seu PC. Clique aqui para baixar a nova versão.")
+            )
+          : null,
         h(
           "section",
           { className: "together-panel together-panel--playback" },

@@ -193,7 +193,11 @@ export class TogetherPlayerBridge {
     const currentTrackUri = Spicetify?.Player?.data?.item?.uri ?? null;
 
     if (targetTrack?.trackUri && currentTrackUri !== targetTrack.trackUri) {
-      await Spicetify.Player.playUri(targetTrack.trackUri);
+      if (Spicetify?.Platform?.PlayerAPI?.skipToNext && Spicetify?.Queue?.nextTracks?.some(t => t.uri === targetTrack.trackUri)) {
+         await Spicetify.Player.skipToNext();
+      } else {
+         await Spicetify.Player.playUri(targetTrack.trackUri);
+      }
       await wait(180);
     }
 

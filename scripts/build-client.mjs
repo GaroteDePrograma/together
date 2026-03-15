@@ -20,6 +20,9 @@ await build({
   legalComments: "none",
   treeShaking: true,
   minify: false,
+  define: {
+    "process.env.TOGETHER_VERSION": JSON.stringify(process.env.TOGETHER_VERSION || "v1.0.0-dev")
+  },
   footer: {
     js: "\nfunction render(){return TogetherBundle.render();}\n"
   }

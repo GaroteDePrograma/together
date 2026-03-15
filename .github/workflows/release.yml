@@ -29,9 +29,6 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Build release bundle
-        run: npm run build
-
       - name: Prepare release metadata
         id: meta
         shell: bash
@@ -45,6 +42,11 @@ jobs:
           echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
           echo "release_name=${RELEASE_NAME}" >> "${GITHUB_OUTPUT}"
           echo "archive_name=${ARCHIVE_NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build release bundle
+        run: npm run build
+        env:
+          TOGETHER_VERSION: ${{ steps.meta.outputs.tag }}
 
       - name: Package installable app
         shell: bash
