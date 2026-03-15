@@ -402,6 +402,59 @@
   margin-bottom: 0;
 }
 
+.together-room-code-card {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  margin-top: 16px;
+  padding: 16px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--tg-radius-lg);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
+  color: var(--tg-text);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease;
+}
+
+.together-room-code-card:hover {
+  border-color: rgba(30, 215, 96, 0.3);
+  background: linear-gradient(180deg, rgba(30, 215, 96, 0.1), rgba(30, 215, 96, 0.04));
+  transform: translateY(-1px);
+}
+
+.together-room-code-card.is-copied {
+  border-color: rgba(30, 215, 96, 0.42);
+  background: linear-gradient(180deg, rgba(30, 215, 96, 0.16), rgba(30, 215, 96, 0.08));
+}
+
+.together-room-code-card__label,
+.together-room-code-card__hint {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.together-room-code-card__label {
+  color: var(--tg-text-muted);
+}
+
+.together-room-code-card__value {
+  font-size: 28px;
+  font-weight: 900;
+  font-family: "SFMono-Regular", "Cascadia Code", "JetBrains Mono", monospace;
+  letter-spacing: 0.18em;
+  line-height: 1;
+}
+
+.together-room-code-card__hint {
+  color: rgba(255, 255, 255, 0.72);
+}
+
 .together-field {
   display: grid;
   gap: 8px;
@@ -446,13 +499,41 @@
 }
 
 .together-mini-button {
-  border: 0;
-  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
   cursor: pointer;
-  color: var(--tg-text-soft);
-  background: transparent;
+  color: var(--tg-text);
+  background: var(--tg-surface-soft);
   font-size: 12px;
   font-weight: 700;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease,
+    color 160ms ease;
+}
+
+.together-mini-button:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+  transform: translateY(-1px);
+}
+
+.together-mini-button--copy {
+  border-color: rgba(30, 215, 96, 0.24);
+  background: rgba(30, 215, 96, 0.12);
+  color: #d3ffe0;
+}
+
+.together-mini-button--danger {
+  border-color: rgba(241, 94, 108, 0.22);
+  background: rgba(241, 94, 108, 0.12);
+  color: #ffd1d6;
 }
 
 .together-error {

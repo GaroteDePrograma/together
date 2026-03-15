@@ -31,26 +31,75 @@ let initialized = false;
 let togetherQueueContextMenuItem: any = null;
 
 const TRACK_URI_PREFIX = "spotify:track:";
+const TRACK_URL_PREFIX = "https://open.spotify.com/track/";
+const UNKNOWN_TRACK_TITLE = "Faixa desconhecida";
+const UNKNOWN_TRACK_ARTIST = "Artista desconhecido";
 const TOGETHER_CONTEXT_MENU_ICON =
   '<path d="M17 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm-10 0a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm0 2c-2.485 0-4.5 1.79-4.5 4V20h9v-3c0-.728.173-1.415.48-2.023A5.978 5.978 0 0 0 7 13Zm10 0c-.944 0-1.837.218-2.632.607A5.994 5.994 0 0 1 16.5 17v3h5v-3c0-2.21-2.015-4-4.5-4Z"/>';
 
-const isSpotifyTrackUri = (uri: string) => {
-  const parsedUri = Spicetify?.URI?.from?.(uri);
-  return parsedUri?.type === Spicetify?.URI?.Type?.TRACK || uri.startsWith(TRACK_URI_PREFIX);
-};
-
 const extractTrackIdFromUri = (uri: string) => {
-  const parsedUri = Spicetify?.URI?.from?.(uri);
+  const normalizedUri = uri.trim();
+  const parsedUri = Spicetify?.URI?.from?.(normalizedUri);
   if (parsedUri?.type === Spicetify?.URI?.Type?.TRACK && typeof parsedUri.id === "string") {
     return parsedUri.id;
   }
 
-  const match = /^spotify:track:([A-Za-z0-9]+)(?:[?:].*)?$/i.exec(uri.trim());
-  if (!match) {
-    return null;
+  const matches = [
+    /^spotify:track:([A-Za-z0-9]+)(?:[?:#].*)?$/i.exec(normalizedUri),
+    /^https?:\/\/open\.spotify\.com\/track\/([A-Za-z0-9]+)(?:\?.*)?$/i.exec(normalizedUri)
+  ];
+
+  for (const match of matches) {
+    if (match?.[1]) {
+      return match[1];
+    }
   }
 
-  return match[1] ?? null;
+  return null;
+};
+
+const isSpotifyTrackUri = (uri: string) => Boolean(extractTrackIdFromUri(uri));
+const buildSpotifyTrackUri = (trackId: string) => `${TRACK_URI_PREFIX}${trackId}`;
+type SelectedTrackRef = {
+  uri: string;
+  uid?: string | null;
+  metadata?: Record<string, string> | null;
+};
+
+const buildSelectedTrackRefs = (uris: string[], uids?: string[]) =>
+  uris
+    .filter(isSpotifyTrackUri)
+    .map((uri, index) => ({
+      uri,
+      uid: Array.isArray(uids) ? (uids[index] ?? null) : null
+    }));
+
+const getGraphQLVariableNames = (query: any) => {
+  const definitions = Array.isArray(query?.definitions) ? query.definitions : [query];
+  return definitions
+    .flatMap((definition) =>
+      Array.isArray(definition?.variableDefinitions)
+        ? definition.variableDefinitions.map((variableDefinition: any) => variableDefinition?.variable?.name?.value)
+        : []
+    )
+    .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
+};
+
+const pickGraphQLVariables = (query: any, candidates: Record<string, any>) => {
+  const variableNames = new Set(getGraphQLVariableNames(query));
+  if (!variableNames.size) {
+    return candidates;
+  }
+
+  return Object.fromEntries(
+    Object.entries(candidates).filter(([key, value]) => {
+      if (!variableNames.has(key) || value == null) {
+        return false;
+      }
+
+      return !Array.isArray(value) || value.length > 0;
+    })
+  );
 };
 
 const ensureControllers = () => {
@@ -166,8 +215,8 @@ const mapSpotifyTrackToSessionTrack = (track: any): SessionTrack | null => {
 
   return {
     trackUri: rawUri,
-    title: track?.name ?? track?.title ?? "Faixa desconhecida",
-    artist: artists[0]?.name ?? artists[0]?.profile?.name ?? track?.artist?.name ?? "Artista desconhecido",
+    title: track?.name ?? track?.title ?? UNKNOWN_TRACK_TITLE,
+    artist: artists[0]?.name ?? artists[0]?.profile?.name ?? track?.artist?.name ?? UNKNOWN_TRACK_ARTIST,
     album: album?.name ?? album?.title ?? null,
     imageUrl: images[0]?.url ?? images[0]?.source ?? null,
     durationMs: Number(
@@ -176,26 +225,394 @@ const mapSpotifyTrackToSessionTrack = (track: any): SessionTrack | null => {
   };
 };
 
-const fetchTrackSummaryByUri = async (uri: string): Promise<SessionTrack | null> => {
-  const trackId = extractTrackIdFromUri(uri);
-  if (!trackId) {
+const isMeaningfulTrackText = (value: string | null | undefined, fallback: string) =>
+  typeof value === "string" && value.trim().length > 0 && value.trim().toLowerCase() !== fallback.toLowerCase();
+
+const isMeaningfulTrackSummary = (track: SessionTrack | null): track is SessionTrack =>
+  Boolean(
+    track &&
+      extractTrackIdFromUri(track.trackUri) &&
+      isMeaningfulTrackText(track.title, UNKNOWN_TRACK_TITLE)
+  );
+
+const mapContextTrackMetadataToSessionTrack = (
+  trackRef: Pick<SelectedTrackRef, "uri" | "metadata">,
+  metadata?: Record<string, string> | null
+): SessionTrack | null => {
+  const trackId = extractTrackIdFromUri(trackRef.uri);
+  if (!trackId || !metadata) {
     return null;
   }
+
+  const title = metadata.title?.trim();
+  const artist = metadata.artist_name?.trim() ?? metadata["artist_name:1"]?.trim() ?? UNKNOWN_TRACK_ARTIST;
+  if (!title) {
+    return null;
+  }
+
+  return {
+    trackUri: buildSpotifyTrackUri(trackId),
+    title,
+    artist,
+    album: metadata.album_title?.trim() || null,
+    imageUrl:
+      metadata.image_xlarge_url ??
+      metadata.image_large_url ??
+      metadata.image_url ??
+      metadata.image_small_url ??
+      null,
+    durationMs: Number(metadata.duration ?? 0)
+  };
+};
+
+const resolveCandidateTrackUri = (value: any, trackId: string) => {
+  const candidateUris = [
+    value?.uri,
+    value?.trackUri,
+    value?.entityUri,
+    value?.linkedFrom?.uri,
+    value?.shareUrl
+  ];
+
+  for (const candidateUri of candidateUris) {
+    if (typeof candidateUri === "string" && extractTrackIdFromUri(candidateUri) === trackId) {
+      return buildSpotifyTrackUri(trackId);
+    }
+  }
+
+  if (typeof value?.id === "string" && value.id === trackId) {
+    return buildSpotifyTrackUri(trackId);
+  }
+
+  return null;
+};
+
+const isTrackCandidateMatch = (value: any, trackId: string) =>
+  Boolean(
+    value &&
+      typeof value === "object" &&
+      resolveCandidateTrackUri(value, trackId) &&
+      (typeof value?.name === "string" ||
+        typeof value?.title === "string" ||
+        Array.isArray(value?.artists) ||
+        value?.artist ||
+        value?.album ||
+        value?.albumOfTrack ||
+        value?.duration_ms ||
+        value?.duration)
+  );
+
+const findTrackCandidate = (value: any, trackId: string, visited = new Set<any>()): any | null => {
+  if (!value || typeof value !== "object" || visited.has(value)) {
+    return null;
+  }
+
+  visited.add(value);
+  if (isTrackCandidateMatch(value, trackId)) {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const match = findTrackCandidate(item, trackId, visited);
+      if (match) {
+        return match;
+      }
+    }
+
+    return null;
+  }
+
+  for (const nestedValue of Object.values(value)) {
+    const match = findTrackCandidate(nestedValue, trackId, visited);
+    if (match) {
+      return match;
+    }
+  }
+
+  return null;
+};
+
+const summarizeTrackCandidate = (value: any, trackId: string): SessionTrack | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const artist = typeof value?.artist === "string" ? { name: value.artist } : value?.artist;
+  const normalizedCandidate = {
+    ...value,
+    uri: resolveCandidateTrackUri(value, trackId) ?? buildSpotifyTrackUri(trackId),
+    name: value?.name ?? value?.title ?? value?.track?.name,
+    artist,
+    artists: Array.isArray(value?.artists)
+      ? value.artists
+      : Array.isArray(value?.artists?.items)
+        ? value.artists.items
+        : Array.isArray(value?.track?.artists)
+          ? value.track.artists
+          : artist
+            ? [artist]
+            : [],
+    album: value?.album ?? value?.albumOfTrack ?? value?.track?.album ?? value?.release ?? null,
+    images:
+      value?.images ??
+      value?.track?.images ??
+      value?.album?.images ??
+      value?.albumOfTrack?.images ??
+      value?.coverArt?.sources ??
+      value?.albumOfTrack?.coverArt?.sources ??
+      [],
+    duration_ms:
+      value?.duration_ms ??
+      value?.track?.duration_ms ??
+      value?.duration?.totalMilliseconds ??
+      value?.duration?.milliseconds ??
+      value?.duration ??
+      value?.track?.duration ??
+      0
+  };
+
+  const summary = buildTrackSummary(normalizedCandidate) ?? mapSpotifyTrackToSessionTrack(normalizedCandidate);
+  return isMeaningfulTrackSummary(summary) ? summary : null;
+};
+
+const describeResponseShape = (value: any) =>
+  value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value).slice(0, 12) : typeof value;
+
+const resolveTrackSummaryFromResponse = (value: any, trackId: string) =>
+  summarizeTrackCandidate(value, trackId) ?? summarizeTrackCandidate(findTrackCandidate(value, trackId), trackId);
+
+const isDecoratedContextTrackCandidate = (value: any): value is SelectedTrackRef =>
+  Boolean(
+    value &&
+      typeof value === "object" &&
+      typeof value.uri === "string" &&
+      isSpotifyTrackUri(value.uri) &&
+      value.metadata &&
+      typeof value.metadata === "object"
+  );
+
+const findDecoratedContextTracks = (value: any, visited = new Set<any>()): SelectedTrackRef[] => {
+  if (!value || typeof value !== "object" || visited.has(value)) {
+    return [];
+  }
+
+  visited.add(value);
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => findDecoratedContextTracks(item, visited));
+  }
+
+  const matches = isDecoratedContextTrackCandidate(value) ? [value] : [];
+  return matches.concat(Object.values(value).flatMap((nestedValue) => findDecoratedContextTracks(nestedValue, visited)));
+};
+
+const fetchTrackSummariesFromDecoratedContext = async (
+  trackRefs: SelectedTrackRef[],
+  contextUri?: string
+): Promise<SessionTrack[]> => {
+  const query = Spicetify?.GraphQL?.Definitions?.decorateContextTracks;
+  const request = Spicetify?.GraphQL?.Request;
+  if (!query || !request || !trackRefs.length) {
+    return [];
+  }
+
+  const contextTracks = trackRefs.map(({ uri, uid }) => ({
+    uri,
+    ...(uid ? { uid } : {})
+  }));
+  const variableCandidates = [
+    pickGraphQLVariables(query, {
+      tracks: contextTracks,
+      contextTracks,
+      ...(contextUri ? { contextUri } : {}),
+      ...(contextUri ? { contextURI: contextUri } : {}),
+      ...(contextUri ? { context: contextUri } : {}),
+      market: Spicetify?.GraphQL?.Context?.market,
+      locale: Spicetify?.Locale?.getLocale?.()
+    }),
+    pickGraphQLVariables(query, {
+      uris: contextTracks.map((track) => track.uri),
+      uids: contextTracks.map((track) => track.uid).filter((uid): uid is string => Boolean(uid)),
+      ...(contextUri ? { contextUri } : {}),
+      ...(contextUri ? { contextURI: contextUri } : {}),
+      ...(contextUri ? { context: contextUri } : {}),
+      market: Spicetify?.GraphQL?.Context?.market,
+      locale: Spicetify?.Locale?.getLocale?.()
+    }),
+    pickGraphQLVariables(query, {
+      tracks: contextTracks,
+      contextTracks,
+      market: Spicetify?.GraphQL?.Context?.market,
+      locale: Spicetify?.Locale?.getLocale?.()
+    })
+  ].filter((variables) => Object.keys(variables).length > 0);
+
+  for (const variables of variableCandidates) {
+    try {
+      const response = await request(query, variables);
+      const decoratedTracks = findDecoratedContextTracks(response);
+      const summaries = decoratedTracks
+        .map((track) => mapContextTrackMetadataToSessionTrack(track, track.metadata))
+        .filter(isMeaningfulTrackSummary);
+
+      if (summaries.length) {
+        const summariesById = new Map(summaries.map((summary) => [extractTrackIdFromUri(summary.trackUri), summary] as const));
+        return trackRefs
+          .map((trackRef) => {
+            const trackId = extractTrackIdFromUri(trackRef.uri);
+            return trackId ? (summariesById.get(trackId) ?? null) : null;
+          })
+          .filter(isMeaningfulTrackSummary);
+      }
+    } catch (error) {
+      console.warn("[Together] Falha ao decorar faixas do contexto.", {
+        contextUri,
+        variables: Object.keys(variables),
+        error
+      });
+    }
+  }
+
+  return [];
+};
+
+const fetchTrackSummaryFromOEmbed = async (trackId: string): Promise<SessionTrack | null> => {
+  const trackUrl = `${TRACK_URL_PREFIX}${trackId}`;
 
   try {
-    const track = await Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/tracks/${trackId}`);
-    return buildTrackSummary(track) ?? mapSpotifyTrackToSessionTrack(track);
-  } catch {
+    const response = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(trackUrl)}`);
+    if (!response.ok) {
+      throw new Error(`Spotify oEmbed respondeu com status ${response.status}.`);
+    }
+
+    const payload = await response.json();
+    const title = typeof payload?.title === "string" ? payload.title.trim() : "";
+    const artist = typeof payload?.author_name === "string" ? payload.author_name.trim() : UNKNOWN_TRACK_ARTIST;
+    if (!title) {
+      console.warn("[Together] Spotify oEmbed retornou payload sem metadados suficientes.", {
+        trackId,
+        responseKeys: describeResponseShape(payload)
+      });
+      return null;
+    }
+
+    return {
+      trackUri: buildSpotifyTrackUri(trackId),
+      title,
+      artist,
+      album: null,
+      imageUrl: typeof payload?.thumbnail_url === "string" ? payload.thumbnail_url : null,
+      durationMs: 0
+    };
+  } catch (error) {
+    console.warn("[Together] Falha ao carregar metadados via Spotify oEmbed.", { trackId, error });
     return null;
   }
 };
 
-const fetchTrackSummariesByUris = async (uris: string[]): Promise<SessionTrack[]> => {
-  const tracks = await Promise.all(uris.map((uri) => fetchTrackSummaryByUri(uri)));
-  return tracks.filter((track): track is SessionTrack => Boolean(track));
+const fetchTrackSummaryFromGraphQL = async (trackId: string): Promise<SessionTrack | null> => {
+  const request = Spicetify?.GraphQL?.Request;
+  const defs = Spicetify?.GraphQL?.Definitions || {};
+  if (!request) return null;
+
+  const queries = [
+    defs.getTrack,
+    defs.track,
+    defs.browseTrack,
+    defs.fetchTrack,
+    defs.getTrackParsed,
+    defs.Track
+  ].filter(Boolean);
+
+  if (!queries.length) {
+    const keys = Object.keys(defs).filter(k => k.toLowerCase().includes("track"));
+    notify(`Sem queries GraphQL conhecidas. Temos: ${keys.slice(0, 10).join(", ")}`, "error");
+    return null;
+  }
+
+  for (const query of queries) {
+    try {
+      const response = await request(
+        query,
+        pickGraphQLVariables(query, {
+          uri: buildSpotifyTrackUri(trackId),
+          market: Spicetify?.GraphQL?.Context?.market,
+          locale: Spicetify?.Locale?.getLocale?.()
+        })
+      );
+      const summary = resolveTrackSummaryFromResponse(response, trackId);
+      if (summary) return summary;
+    } catch (error) {
+       // ignore query failure, try next
+    }
+  }
+
+  return null;
 };
 
-const addSelectedTracksToTogetherQueue = async (uris: string[]) => {
+const fetchTrackSummaryFromOfficialToken = async (uri: string, trackId: string): Promise<SessionTrack | null> => {
+  try {
+    const tokenProv = (Spicetify?.Platform?.AuthorizationAPI as any)?._tokenProvider || (Spicetify?.Platform?.AuthorizationAPI as any)?._session;
+    const token = typeof tokenProv?.getToken === "function" ? (await tokenProv.getToken())?.accessToken : tokenProv?.accessToken;
+
+    if (token) {
+      const res = await fetch(`https://api.spotify.com/v1/tracks/${trackId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const response = await res.json();
+        const summary = resolveTrackSummaryFromResponse(response, trackId);
+        if (summary) return summary;
+      }
+    }
+  } catch (error) {
+    // ignore
+  }
+  return null;
+};
+
+const fetchTrackSummaryByUri = async (uri: string): Promise<SessionTrack | null> => {
+  const trackId = extractTrackIdFromUri(uri);
+  if (!trackId) return null;
+
+  return (
+    (await fetchTrackSummaryFromGraphQL(trackId)) ??
+    (await fetchTrackSummaryFromOfficialToken(uri, trackId)) ??
+    (await fetchTrackSummaryFromOEmbed(trackId))
+  );
+};
+
+const fetchTrackSummariesBySelection = async (
+  uris: string[],
+  uids?: string[],
+  contextUri?: string
+): Promise<SessionTrack[]> => {
+  const trackRefs = buildSelectedTrackRefs(uris, uids);
+  if (!trackRefs.length) {
+    return [];
+  }
+
+  const decoratedTracks = await fetchTrackSummariesFromDecoratedContext(trackRefs, contextUri);
+  const decoratedTrackIds = new Set(
+    decoratedTracks
+      .map((track) => extractTrackIdFromUri(track.trackUri))
+      .filter((trackId): trackId is string => Boolean(trackId))
+  );
+
+  const missingTrackRefs = trackRefs.filter((trackRef) => {
+    const trackId = extractTrackIdFromUri(trackRef.uri);
+    return !trackId || !decoratedTrackIds.has(trackId);
+  });
+
+  if (!missingTrackRefs.length) {
+    return decoratedTracks;
+  }
+
+  const fallbackTracks = await Promise.all(missingTrackRefs.map((trackRef) => fetchTrackSummaryByUri(trackRef.uri)));
+  return decoratedTracks.concat(fallbackTracks.filter(isMeaningfulTrackSummary));
+};
+
+const addSelectedTracksToTogetherQueue = async (uris: string[], uids?: string[], contextUri?: string) => {
   ensureControllers();
 
   const state = store.getState();
@@ -204,14 +621,18 @@ const addSelectedTracksToTogetherQueue = async (uris: string[]) => {
     return;
   }
 
-  const trackUris = uris.filter(isSpotifyTrackUri);
-  if (!trackUris.length) {
+  const trackRefs = buildSelectedTrackRefs(uris, uids);
+  if (!trackRefs.length) {
     notify("Selecione pelo menos uma faixa do Spotify.", "info");
     return;
   }
 
   try {
-    const tracks = await fetchTrackSummariesByUris(trackUris);
+    const tracks = await fetchTrackSummariesBySelection(
+      trackRefs.map((trackRef) => trackRef.uri),
+      trackRefs.map((trackRef) => trackRef.uid ?? ""),
+      contextUri
+    );
     if (!tracks.length) {
       notify("Não foi possível ler as faixas selecionadas.", "error");
       return;
@@ -237,8 +658,8 @@ const ensureQueueContextMenu = () => {
 
   togetherQueueContextMenuItem = new Spicetify.ContextMenu.Item(
     "Adicionar à fila do Together",
-    (uris: string[]) => {
-      void addSelectedTracksToTogetherQueue(uris);
+    (uris: string[], uids?: string[], contextUri?: string) => {
+      void addSelectedTracksToTogetherQueue(uris, uids, contextUri);
     },
     (uris: string[]) => {
       const state = store.getState();
@@ -310,16 +731,6 @@ const reconnectRoom = async () => {
 const leaveRoom = async () => {
   await sessionClient?.leaveRoom();
   notify("Sessão encerrada neste cliente.", "info");
-};
-
-const addCurrentTrackToQueue = () => {
-  const track = buildTrackSummary(Spicetify?.Player?.data?.item);
-  if (!track) {
-    notify("Nenhuma faixa ativa para adicionar.", "error");
-    return;
-  }
-
-  sessionClient?.addTrackToQueue(track);
 };
 
 const removeQueueItem = (itemId: string) => {
@@ -498,6 +909,7 @@ const TogetherApp = () => {
   const [backendDraft, setBackendDraft] = useState(state.backendBaseUrl);
   const [roomCodeDraft, setRoomCodeDraft] = useState("");
   const [clock, setClock] = useState(Date.now());
+  const [lastCopiedAt, setLastCopiedAt] = useState(0);
 
   useEffect(() => {
     ensureControllers();
@@ -541,6 +953,9 @@ const TogetherApp = () => {
     [state.participants]
   );
   const nextUpTrack = state.queue[0] ?? null;
+  const roomCodeWasCopied = Boolean(state.roomCode) && clock - lastCopiedAt < 1800;
+  const isInRoom = Boolean(state.roomCode);
+  const canReconnectRoom = isInRoom && !state.socketConnected && state.connectionStatus !== "connecting";
 
   const copyRoomCode = async () => {
     if (!state.roomCode) {
@@ -550,6 +965,7 @@ const TogetherApp = () => {
 
     try {
       await navigator.clipboard?.writeText(state.roomCode);
+      setLastCopiedAt(Date.now());
       notify("Código da sala copiado.", "success");
     } catch {
       notify("Não foi possível copiar o código.", "error");
@@ -634,8 +1050,7 @@ const TogetherApp = () => {
           h(
             "div",
             { className: "together-panel__header" },
-            h("h2", { className: "together-panel__title" }, "Conectados"),
-            h("span", { className: "together-panel__count" }, `${connectedCount}/${state.participants.length || 0}`)
+            h("h2", { className: "together-panel__title" }, "Conectados")
           ),
           state.participants.length
             ? h(
@@ -666,14 +1081,6 @@ const TogetherApp = () => {
             h(
               "div",
               { className: "together-panel__actions" },
-              h(
-                "button",
-                {
-                  className: "together-button together-button--ghost",
-                  onClick: addCurrentTrackToQueue
-                },
-                "Adicionar atual"
-              ),
               h(
                 "button",
                 {
@@ -735,73 +1142,97 @@ const TogetherApp = () => {
                 : "Crie uma nova sala ou entre usando o código. Seu nome do Spotify será usado automaticamente."
             )
           ),
-          h(
-            "label",
-            { className: "together-field" },
-            h("span", { className: "together-field__label" }, "Código da sala"),
-            h("input", {
-              value: roomCodeDraft,
-              onChange: (event: any) => setRoomCodeDraft(event.target.value.toUpperCase()),
-              placeholder: "ID do amigo",
-              className: "together-input"
-            })
-          ),
-          h(
-            "div",
-            { className: "together-session-actions" },
-            h(
-              "button",
-              {
-                className: "together-button together-button--primary together-button--wide",
-                onClick: () => {
-                  if (roomCodeDraft.trim()) {
-                    joinRoom(roomCodeDraft);
-                    return;
-                  }
-                  createRoom();
-                }
-              },
-              roomCodeDraft.trim() ? "Conectar" : "Criar sala"
-            ),
-            h(
-              "button",
-              {
-                className: "together-button together-button--ghost",
-                onClick: () => {
-                  createRoom();
-                }
-              },
-              "Nova sala"
-            )
-          ),
-          h(
-            "div",
-            { className: "together-mini-actions" },
-            h(
-              "button",
-              {
-                className: "together-mini-button",
-                onClick: copyRoomCode
-              },
-              "Copiar código"
-            ),
-            h(
-              "button",
-              {
-                className: "together-mini-button",
-                onClick: reconnectRoom
-              },
-              "Reconectar"
-            ),
-            h(
-              "button",
-              {
-                className: "together-mini-button together-mini-button--danger",
-                onClick: leaveRoom
-              },
-              "Sair"
-            )
-          ),
+          state.roomCode
+            ? h(
+                "button",
+                {
+                  className: `together-room-code-card${roomCodeWasCopied ? " is-copied" : ""}`,
+                  onClick: copyRoomCode,
+                  type: "button",
+                  title: "Copiar código da sala"
+                },
+                h("span", { className: "together-room-code-card__label" }, "Código da sala"),
+                h("strong", { className: "together-room-code-card__value" }, state.roomCode),
+                h(
+                  "span",
+                  { className: "together-room-code-card__hint" },
+                  roomCodeWasCopied ? "Copiado" : "Clique para copiar"
+                )
+              )
+            : null,
+          !isInRoom
+            ? h(
+                react.Fragment,
+                null,
+                h(
+                  "label",
+                  { className: "together-field" },
+                  h("span", { className: "together-field__label" }, "Código da sala"),
+                  h("input", {
+                    value: roomCodeDraft,
+                    onChange: (event: any) => setRoomCodeDraft(event.target.value.toUpperCase()),
+                    placeholder: "ID do amigo",
+                    className: "together-input"
+                  })
+                ),
+                h(
+                  "div",
+                  { className: "together-session-actions" },
+                  h(
+                    "button",
+                    {
+                      className: "together-button together-button--primary together-button--wide",
+                      type: "button",
+                      onClick: () => {
+                        if (roomCodeDraft.trim()) {
+                          joinRoom(roomCodeDraft);
+                          return;
+                        }
+                        createRoom();
+                      }
+                    },
+                    roomCodeDraft.trim() ? "Conectar" : "Criar sala"
+                  ),
+                  h(
+                    "button",
+                    {
+                      className: "together-button together-button--ghost",
+                      type: "button",
+                      onClick: () => {
+                        createRoom();
+                      }
+                    },
+                    "Nova sala"
+                  )
+                )
+              )
+            : null,
+          isInRoom
+            ? h(
+                "div",
+                { className: "together-mini-actions" },
+                canReconnectRoom
+                  ? h(
+                      "button",
+                      {
+                        className: "together-mini-button",
+                        onClick: reconnectRoom,
+                        type: "button"
+                      },
+                      "Reconectar"
+                    )
+                  : null,
+                h(
+                  "button",
+                  {
+                    className: "together-mini-button together-mini-button--danger",
+                    onClick: leaveRoom,
+                    type: "button"
+                  },
+                  "Sair da sala"
+                )
+              )
+            : null,
           h(
             "label",
             { className: "together-field together-field--compact" },
