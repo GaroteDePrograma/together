@@ -359,7 +359,7 @@ export class TogetherSessionClient {
     this.sendMessage(ClientEvents.queueRemove, payload);
   }
 
-  skipToNextQueuedTrack() {
+  skipToNextQueuedTrack(expectedTrackUri?: string | null) {
     const identity = this.getSessionIdentity();
     if (!identity) {
       return;
@@ -367,7 +367,8 @@ export class TogetherSessionClient {
 
     const payload: QueueSkipEnvelope = {
       roomCode: identity.roomCode,
-      memberId: identity.memberId
+      memberId: identity.memberId,
+      ...(expectedTrackUri ? { expectedTrackUri } : {})
     };
 
     this.sendMessage(ClientEvents.queueSkipNext, payload);

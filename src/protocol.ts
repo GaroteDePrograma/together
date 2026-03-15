@@ -142,6 +142,7 @@ export interface QueueRemoveEnvelope {
 export interface QueueSkipEnvelope {
   roomCode: string;
   memberId: string;
+  expectedTrackUri?: string | null;
 }
 
 export const normalizeRoomCode = (value: string) => value.trim().toUpperCase();

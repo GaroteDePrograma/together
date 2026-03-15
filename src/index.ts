@@ -112,7 +112,8 @@ const ensureControllers = () => {
     store,
     getActorId: () => store.getState().memberId,
     canPublishEvents: () => Boolean(store.getState().roomCode && store.getState().socketConnected),
-    sendPlaybackCommand: (command) => sessionClient?.sendPlaybackCommand(command)
+    sendPlaybackCommand: (command) => sessionClient?.sendPlaybackCommand(command),
+    requestQueueAdvance: (expectedTrackUri) => sessionClient?.skipToNextQueuedTrack(expectedTrackUri)
   });
 
   sessionClient = new TogetherSessionClient({

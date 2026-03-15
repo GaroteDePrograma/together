@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPlaybackCommand, buildTrackSummary, shouldPublishSeek } from "./player";
+import { buildPlaybackCommand, buildTrackSummary, shouldAutoPullQueuedTrack, shouldPublishSeek } from "./player";
 
 describe("buildTrackSummary", () => {
   it("maps spotify player items to a session track", () => {
@@ -46,5 +46,49 @@ describe("shouldPublishSeek", () => {
 
   it("ignores expected playback progression", () => {
     expect(shouldPublishSeek(1000, 2200, 1000)).toBe(false);
+  });
+});
+
+describe("shouldAutoPullQueuedTrack", () => {
+  const previousTrack = {
+    trackUri: "spotify:track:butterfly",
+    title: "Butterfly",
+    artist: "Smile.dk",
+    album: "Album",
+    imageUrl: null,
+    durationMs: 180000
+  };
+
+  const nextTrack = {
+    trackUri: "spotify:track:badboy",
+    title: "Bad Boy",
+    artist: "Artist",
+    album: "Album",
+    imageUrl: null,
+    durationMs: 175000
+  };
+
+  it("detects a natural advance when the together queue has pending tracks", () => {
+    expect(
+      shouldAutoPullQueuedTrack({
+        previousTrack,
+        nextTrack,
+        queueLength: 2,
+        previousProgressMs: 178500,
+        nextProgressMs: 400
+      })
+    ).toBe(true);
+  });
+
+  it("ignores manual-like changes when the current track was not ending", () => {
+    expect(
+      shouldAutoPullQueuedTrack({
+        previousTrack,
+        nextTrack,
+        queueLength: 2,
+        previousProgressMs: 90000,
+        nextProgressMs: 400
+      })
+    ).toBe(false);
   });
 });

@@ -4,6 +4,8 @@ import { SEEK_DETECTION_TOLERANCE_MS, SEEK_SYNC_THRESHOLD_MS, createId, wait } f
 
 const safePlayerProgress = () => Spicetify?.Player?.getProgress?.() ?? 0;
 const safePlayerIsPlaying = () => Boolean(Spicetify?.Player?.isPlaying?.());
+const AUTO_PULL_END_TOLERANCE_MS = 2500;
+const AUTO_PULL_NEXT_TRACK_PROGRESS_MAX_MS = 3000;
 
 export const buildTrackSummary = (playerItem: any): SessionTrack | null => {
   if (!playerItem?.uri) {
@@ -64,11 +66,32 @@ export const shouldPublishSeek = (
   return observedDelta > toleranceMs;
 };
 
+export const shouldAutoPullQueuedTrack = (options: {
+  previousTrack: SessionTrack | null;
+  nextTrack: SessionTrack | null;
+  queueLength: number;
+  previousProgressMs: number;
+  nextProgressMs: number;
+}) => {
+  const { previousTrack, nextTrack, queueLength, previousProgressMs, nextProgressMs } = options;
+  if (!previousTrack || !nextTrack || queueLength < 1) {
+    return false;
+  }
+
+  if (previousTrack.trackUri === nextTrack.trackUri || previousTrack.durationMs <= 0) {
+    return false;
+  }
+
+  const remainingMs = previousTrack.durationMs - previousProgressMs;
+  return remainingMs <= AUTO_PULL_END_TOLERANCE_MS && nextProgressMs <= AUTO_PULL_NEXT_TRACK_PROGRESS_MAX_MS;
+};
+
 interface PlayerBridgeOptions {
   store: AppStore;
   getActorId: () => string | null;
   canPublishEvents: () => boolean;
   sendPlaybackCommand: (command: PlaybackCommand) => void;
+  requestQueueAdvance: (expectedTrackUri: string) => void;
 }
 
 export class TogetherPlayerBridge {
@@ -76,6 +99,7 @@ export class TogetherPlayerBridge {
   private readonly getActorId: () => string | null;
   private readonly canPublishEvents: () => boolean;
   private readonly sendPlaybackCommand: (command: PlaybackCommand) => void;
+  private readonly requestQueueAdvance: (expectedTrackUri: string) => void;
   private started = false;
   private lastProgressSampleMs = 0;
   private lastProgressSampleAt = Date.now();
@@ -91,6 +115,7 @@ export class TogetherPlayerBridge {
     this.getActorId = options.getActorId;
     this.canPublishEvents = options.canPublishEvents;
     this.sendPlaybackCommand = options.sendPlaybackCommand;
+    this.requestQueueAdvance = options.requestQueueAdvance;
   }
 
   start() {
@@ -135,21 +160,39 @@ export class TogetherPlayerBridge {
   }
 
   private handleSongChange = () => {
-    this.lastProgressSampleMs = safePlayerProgress();
+    const previousProgressMs = this.lastProgressSampleMs;
+    const nextProgressMs = safePlayerProgress();
     this.lastProgressSampleAt = Date.now();
+    this.lastProgressSampleMs = nextProgressMs;
 
     if (this.isSuppressed("songchange")) {
       return;
     }
 
+    const state = this.store.getState();
+    const previousTrack = state.playback.currentTrack;
     const track = buildTrackSummary(Spicetify?.Player?.data?.item);
     if (!track) {
       return;
     }
 
+    if (
+      previousTrack &&
+      shouldAutoPullQueuedTrack({
+        previousTrack,
+        nextTrack: track,
+        queueLength: state.queue.length,
+        previousProgressMs,
+        nextProgressMs
+      })
+    ) {
+      this.requestQueueAdvance(previousTrack.trackUri);
+      return;
+    }
+
     this.emitCommand("SET_TRACK", {
       track,
-      positionMs: safePlayerProgress(),
+      positionMs: nextProgressMs,
       isPlaying: safePlayerIsPlaying()
     });
   };
