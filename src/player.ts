@@ -13,13 +13,21 @@ export const buildTrackSummary = (playerItem: any): SessionTrack | null => {
     return null;
   }
 
-  const firstArtist = Array.isArray(playerItem.artists) ? playerItem.artists[0] : playerItem.artists;
+  const artists = Array.isArray(playerItem.artists) 
+    ? playerItem.artists 
+    : Array.isArray(playerItem.artists?.items) 
+      ? playerItem.artists.items 
+      : Array.isArray(playerItem.firstArtist?.items)
+        ? playerItem.firstArtist.items
+        : playerItem.artists ? [playerItem.artists] : [];
+      
+  const firstArtist = artists[0] ?? playerItem.artist ?? playerItem.firstArtist;
   const images = playerItem.album?.images ?? playerItem.images ?? [];
 
   return {
     trackUri: playerItem.uri,
-    title: playerItem.name ?? "Faixa desconhecida",
-    artist: firstArtist?.name ?? playerItem.artist?.name ?? "Artista desconhecido",
+    title: playerItem.name ?? playerItem.title ?? "Faixa desconhecida",
+    artist: firstArtist?.name ?? firstArtist?.profile?.name ?? playerItem.artist?.name ?? "Artista desconhecido",
     album: playerItem.album?.name ?? null,
     imageUrl: images[0]?.url ?? null,
     durationMs: Number(playerItem.duration?.milliseconds ?? playerItem.duration_ms ?? playerItem.duration ?? 0)

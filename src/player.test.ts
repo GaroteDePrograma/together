@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  TogetherPlayerBridge,
   buildPlaybackCommand,
   buildTrackSummary,
   estimatePlaybackPositionMs,
@@ -8,6 +9,65 @@ import {
   shouldAutoPullQueuedTrack,
   shouldPublishSeek
 } from "./player";
+import type { SessionTrack } from "./protocol";
+import { createAppStore, createInitialAppState } from "./state";
+
+const mockedPlayerState = {
+  uri: null as string | null,
+  progressMs: 0,
+  isPlaying: false
+};
+
+const playUriMock = vi.fn(async (uri: string) => {
+  mockedPlayerState.uri = uri;
+});
+const seekMock = vi.fn((positionMs: number) => {
+  mockedPlayerState.progressMs = positionMs;
+});
+const playMock = vi.fn(async () => {
+  mockedPlayerState.isPlaying = true;
+});
+const pauseMock = vi.fn(async () => {
+  mockedPlayerState.isPlaying = false;
+});
+const skipToNextMock = vi.fn(async () => undefined);
+
+beforeEach(() => {
+  mockedPlayerState.uri = null;
+  mockedPlayerState.progressMs = 0;
+  mockedPlayerState.isPlaying = false;
+  playUriMock.mockClear();
+  seekMock.mockClear();
+  playMock.mockClear();
+  pauseMock.mockClear();
+  skipToNextMock.mockClear();
+
+  (globalThis as Record<string, unknown>).Spicetify = {
+    Player: {
+      addEventListener: vi.fn(),
+      getProgress: () => mockedPlayerState.progressMs,
+      isPlaying: () => mockedPlayerState.isPlaying,
+      playUri: playUriMock,
+      seek: seekMock,
+      play: playMock,
+      pause: pauseMock,
+      skipToNext: skipToNextMock,
+      data: {
+        get item() {
+          return mockedPlayerState.uri ? { uri: mockedPlayerState.uri } : null;
+        }
+      }
+    },
+    Platform: {
+      PlayerAPI: {
+        skipToNext: skipToNextMock
+      }
+    },
+    Queue: {
+      nextTracks: []
+    }
+  };
+});
 
 describe("buildTrackSummary", () => {
   it("maps spotify player items to a session track", () => {
@@ -157,5 +217,56 @@ describe("shouldRequestQueuedAdvanceFromProgress", () => {
         currentProgressMs: 119300
       })
     ).toBe(false);
+  });
+});
+
+describe("TogetherPlayerBridge.syncPlaybackState", () => {
+  it("ignores repeated playback snapshots with the same version", async () => {
+    const store = createAppStore(createInitialAppState("http://localhost:3000", "Guest", null));
+    const bridge = new TogetherPlayerBridge({
+      store,
+      getActorId: () => "member_guest",
+      canPublishEvents: () => true,
+      sendPlaybackCommand: () => undefined,
+      requestQueueAdvance: () => undefined
+    });
+    const currentTrack: SessionTrack = {
+      trackUri: "spotify:track:joined-track",
+      title: "Joined Track",
+      artist: "Artist",
+      album: "Album",
+      imageUrl: null,
+      durationMs: 180000
+    };
+
+    vi.useFakeTimers();
+
+    const firstSync = bridge.syncPlaybackState({
+      currentTrack,
+      positionMs: 42000,
+      isPlaying: true,
+      lastActorId: "member_host",
+      lastCommandId: "command_1",
+      version: 4,
+      updatedAt: "2026-03-17T10:00:00.000Z"
+    });
+    await vi.advanceTimersByTimeAsync(200);
+    await firstSync;
+
+    await bridge.syncPlaybackState({
+      currentTrack,
+      positionMs: 42000,
+      isPlaying: true,
+      lastActorId: "member_host",
+      lastCommandId: "command_1",
+      version: 4,
+      updatedAt: "2026-03-17T10:00:00.000Z"
+    });
+
+    expect(playUriMock).toHaveBeenCalledTimes(1);
+    expect(seekMock).toHaveBeenCalledTimes(1);
+    expect(playMock).toHaveBeenCalledTimes(1);
+
+    vi.useRealTimers();
   });
 });

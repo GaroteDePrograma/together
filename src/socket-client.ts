@@ -79,15 +79,8 @@ export class TogetherSessionClient {
       return;
     }
 
-    this.store.setState((state) =>
-      applySnapshot(state, {
-        snapshot,
-        roomCode: state.roomCode ?? snapshot.roomCode,
-        memberId: state.memberId
-      })
-    );
-
-    await this.onPlaybackState(snapshot.playbackState);
+    this.applyLiveSnapshot(snapshot);
+    await this.syncPlaybackState(snapshot.playbackState);
   }
 
   private toSocketUrl() {
@@ -252,6 +245,20 @@ export class TogetherSessionClient {
     }));
   }
 
+  private applyLiveSnapshot(snapshot: SessionRoomSnapshot) {
+    this.store.setState((state) =>
+      applySnapshot(state, {
+        snapshot,
+        roomCode: state.roomCode ?? snapshot.roomCode,
+        memberId: state.memberId
+      })
+    );
+  }
+
+  private async syncPlaybackState(playback: PlaybackState) {
+    await this.onPlaybackState(playback);
+  }
+
   async createRoom(initialPlayback: InitialPlaybackStateInput | null) {
     const payload: CreateRoomRequest = {
       displayName: this.store.getState().displayName,
@@ -280,6 +287,7 @@ export class TogetherSessionClient {
     });
 
     this.applyBootstrap(response);
+    await this.syncPlaybackState(response.snapshot.playbackState);
     this.connectSocket(response.roomCode, response.memberId);
   }
 
