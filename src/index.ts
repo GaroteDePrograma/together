@@ -1343,6 +1343,13 @@ const TogetherApp = () => {
   const canReconnectRoom = isInRoom && !state.socketConnected && state.connectionStatus !== "connecting";
   const showLyricsSyncButton = lyricsDetached && lyricsPayload?.type === "synced";
 
+  const markLyricsProgrammaticScroll = (durationMs: number) => {
+    lyricsProgrammaticScrollUntilRef.current = Math.max(
+      lyricsProgrammaticScrollUntilRef.current,
+      Date.now() + durationMs
+    );
+  };
+
   const syncLyricsViewport = (behavior: ScrollBehavior = "smooth") => {
     if (lyricsPayload?.type !== "synced") {
       return;
@@ -1353,7 +1360,7 @@ const TogetherApp = () => {
       return;
     }
 
-    lyricsProgrammaticScrollUntilRef.current = Date.now() + (behavior === "smooth" ? 650 : 180);
+    markLyricsProgrammaticScroll(behavior === "smooth" ? 1600 : 220);
     if (activeLyricsIndex < 0) {
       viewport.scrollTo({
         top: 0,
@@ -1380,7 +1387,9 @@ const TogetherApp = () => {
       return;
     }
 
-    if (Date.now() < lyricsProgrammaticScrollUntilRef.current) {
+    const now = Date.now();
+    if (now < lyricsProgrammaticScrollUntilRef.current) {
+      lyricsProgrammaticScrollUntilRef.current = now + 180;
       return;
     }
 
