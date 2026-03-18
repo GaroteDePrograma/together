@@ -1,5 +1,13 @@
 import { buildTrackSummary, readInitialPlayback, TogetherPlayerBridge } from "./player";
-import type { ConnectionStatus, ParticipantSummary, SessionActivity, SessionQueueItem, SessionTrack } from "./protocol";
+import { buildLyricsLookupUrl, fetchTrackLyrics, findActiveLyricsLineIndex } from "./lyrics";
+import type {
+  ConnectionStatus,
+  ParticipantSummary,
+  SessionActivity,
+  SessionQueueItem,
+  SessionTrack,
+  TrackLyricsPayload
+} from "./protocol";
 import { normalizeRoomCode } from "./protocol";
 import { TogetherSessionClient } from "./socket-client";
 import { createAppStore, createInitialAppState } from "./state";
@@ -16,14 +24,17 @@ import {
 
 const react = Spicetify.React;
 const h = react.createElement;
-const { useEffect, useMemo, useState } = react;
+const { useEffect, useMemo, useRef, useState } = react;
 
 const loadDisplayName = () => readSpicetifyStorage(LOCAL_STORAGE_KEYS.displayName) ?? "Spotify listener";
 const loadProfileImageUrl = () => readSpicetifyStorage(LOCAL_STORAGE_KEYS.profileImageUrl);
+const loadProfileUri = () => readSpicetifyStorage(LOCAL_STORAGE_KEYS.profileUri);
 const loadBackendBaseUrl = () =>
   normalizeBaseUrl(readSpicetifyStorage(LOCAL_STORAGE_KEYS.backendBaseUrl) ?? DEFAULT_BACKEND_BASE_URL);
 
-const store = createAppStore(createInitialAppState(loadBackendBaseUrl(), loadDisplayName(), loadProfileImageUrl()));
+const store = createAppStore(
+  createInitialAppState(loadBackendBaseUrl(), loadDisplayName(), loadProfileImageUrl(), loadProfileUri())
+);
 
 let sessionClient: TogetherSessionClient | null = null;
 let playerBridge: TogetherPlayerBridge | null = null;
@@ -32,6 +43,11 @@ let togetherQueueContextMenuItem: any = null;
 
 const TRACK_URI_PREFIX = "spotify:track:";
 const TRACK_URL_PREFIX = "https://open.spotify.com/track/";
+const ARTIST_URI_PREFIX = "spotify:artist:";
+const ARTIST_URL_PREFIX = "https://open.spotify.com/artist/";
+const USER_URI_PREFIX = "spotify:user:";
+const USER_URL_PREFIX = "https://open.spotify.com/user/";
+const SEARCH_URL_PREFIX = "https://open.spotify.com/search/";
 const UNKNOWN_TRACK_TITLE = "Faixa desconhecida";
 const UNKNOWN_TRACK_ARTIST = "Artista desconhecido";
 const TOGETHER_CONTEXT_MENU_ICON =
@@ -58,8 +74,80 @@ const extractTrackIdFromUri = (uri: string) => {
   return null;
 };
 
+const extractArtistIdFromUri = (uri: string) => {
+  const normalizedUri = uri.trim();
+  const parsedUri = Spicetify?.URI?.from?.(normalizedUri);
+  if (parsedUri?.type === Spicetify?.URI?.Type?.ARTIST && typeof parsedUri.id === "string") {
+    return parsedUri.id;
+  }
+
+  const matches = [
+    /^spotify:artist:([A-Za-z0-9]+)(?:[?:#].*)?$/i.exec(normalizedUri),
+    /^https?:\/\/open\.spotify\.com\/artist\/([A-Za-z0-9]+)(?:\?.*)?$/i.exec(normalizedUri)
+  ];
+
+  for (const match of matches) {
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+
+  return null;
+};
+
+const extractUserIdFromUri = (uri: string) => {
+  const normalizedUri = uri.trim();
+  const matches = [
+    /^spotify:user:([^?:#]+)(?:[?:#].*)?$/i.exec(normalizedUri),
+    /^https?:\/\/open\.spotify\.com\/user\/([^/?#]+)(?:\?.*)?$/i.exec(normalizedUri)
+  ];
+
+  for (const match of matches) {
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+
+  return null;
+};
+
 const isSpotifyTrackUri = (uri: string) => Boolean(extractTrackIdFromUri(uri));
 const buildSpotifyTrackUri = (trackId: string) => `${TRACK_URI_PREFIX}${trackId}`;
+const buildSpotifyArtistUri = (artistId: string) => `${ARTIST_URI_PREFIX}${artistId}`;
+const buildSpotifyUserUri = (userId: string) => `${USER_URI_PREFIX}${userId}`;
+
+const normalizeArtistUri = (value: unknown) => {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+
+  const artistId = extractArtistIdFromUri(value);
+  return artistId ? buildSpotifyArtistUri(artistId) : null;
+};
+
+const getMetadataArtistUri = (metadata: Record<string, unknown> | null | undefined) => {
+  if (!metadata) {
+    return null;
+  }
+
+  for (const [key, value] of Object.entries(metadata)) {
+    if (/^artist_uri(?::\d+)?$/i.test(key)) {
+      const artistUri = normalizeArtistUri(value);
+      if (artistUri) {
+        return artistUri;
+      }
+    }
+  }
+
+  return null;
+};
+
+const resolveArtistUri = (artist: any, metadata?: Record<string, unknown> | null) =>
+  normalizeArtistUri(artist?.uri) ??
+  normalizeArtistUri(artist?.profile?.uri) ??
+  (typeof artist?.id === "string" && artist.id.length ? buildSpotifyArtistUri(artist.id) : null) ??
+  getMetadataArtistUri(metadata);
+
 type SelectedTrackRef = {
   uri: string;
   uid?: string | null;
@@ -77,7 +165,7 @@ const buildSelectedTrackRefs = (uris: string[], uids?: string[]) =>
 const getGraphQLVariableNames = (query: any) => {
   const definitions = Array.isArray(query?.definitions) ? query.definitions : [query];
   return definitions
-    .flatMap((definition) =>
+    .flatMap((definition: any) =>
       Array.isArray(definition?.variableDefinitions)
         ? definition.variableDefinitions.map((variableDefinition: any) => variableDefinition?.variable?.name?.value)
         : []
@@ -131,6 +219,125 @@ const notify = (message: string, kind: "info" | "success" | "error" = "info") =>
   showGlobalNotification(message, kind);
 };
 
+const openSpotifyRoute = (path: string, fallbackUrl: string) => {
+  try {
+    const history = Spicetify?.Platform?.History;
+    if (typeof history?.push === "function") {
+      history.push(path);
+      return;
+    }
+  } catch {
+    // Ignore History API failures and fall back to the web URL.
+  }
+
+  window.open(fallbackUrl, "_blank", "noopener,noreferrer");
+};
+
+const openTrackPage = (trackUri: string | null | undefined) => {
+  if (!trackUri) {
+    return;
+  }
+
+  const trackId = extractTrackIdFromUri(trackUri);
+  if (!trackId) {
+    return;
+  }
+
+  window.open(`${TRACK_URL_PREFIX}${trackId}`, "_blank", "noopener,noreferrer");
+};
+
+const openArtistPage = (artistUri: string | null | undefined) => {
+  if (!artistUri) {
+    return;
+  }
+
+  const artistId = extractArtistIdFromUri(artistUri);
+  if (!artistId) {
+    return;
+  }
+
+  openSpotifyRoute(`/artist/${artistId}`, `${ARTIST_URL_PREFIX}${artistId}`);
+};
+
+const openProfilePage = (profileUri: string | null | undefined) => {
+  if (!profileUri) {
+    return;
+  }
+
+  const userId = extractUserIdFromUri(profileUri);
+  if (!userId) {
+    return;
+  }
+
+  openSpotifyRoute(`/user/${userId}`, `${USER_URL_PREFIX}${userId}`);
+};
+
+const openArtistSearchPage = (artistName: string | null | undefined) => {
+  const normalizedArtistName = artistName?.trim();
+  if (!normalizedArtistName) {
+    return;
+  }
+
+  const encodedArtistName = encodeURIComponent(normalizedArtistName);
+  openSpotifyRoute(`/search/${encodedArtistName}/artists`, `${SEARCH_URL_PREFIX}${encodedArtistName}/artists`);
+};
+
+const artistUriByTrackCache = new Map<string, Promise<string | null> | string | null>();
+
+const getPrimaryArtistUriForTrack = async (trackUri: string | null | undefined) => {
+  if (!trackUri) {
+    return null;
+  }
+
+  const trackId = extractTrackIdFromUri(trackUri);
+  if (!trackId) {
+    return null;
+  }
+
+  const cached = artistUriByTrackCache.get(trackId);
+  if (typeof cached === "string" || cached === null) {
+    return cached;
+  }
+
+  if (cached) {
+    return cached;
+  }
+
+  const pending = (async () => {
+    try {
+      const track = await Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/tracks/${trackId}`);
+      const artistId = typeof track?.artists?.[0]?.id === "string" ? track.artists[0].id : null;
+      return artistId ? buildSpotifyArtistUri(artistId) : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  artistUriByTrackCache.set(trackId, pending);
+  const resolved = await pending;
+  artistUriByTrackCache.set(trackId, resolved);
+  return resolved;
+};
+
+const openArtistPageForTrack = async (options: {
+  artistUri?: string | null;
+  trackUri?: string | null;
+  artistName?: string | null;
+}) => {
+  if (options.artistUri) {
+    openArtistPage(options.artistUri);
+    return;
+  }
+
+  const artistUri = await getPrimaryArtistUriForTrack(options.trackUri);
+  if (!artistUri) {
+    openArtistSearchPage(options.artistName);
+    return;
+  }
+
+  openArtistPage(artistUri);
+};
+
 const extractSpotifyAvatarUrl = (user: any) =>
   user?.avatarUrl ??
   user?.imageUrl ??
@@ -141,37 +348,45 @@ const extractSpotifyAvatarUrl = (user: any) =>
 
 const extractSpotifyDisplayName = (user: any) => user?.displayName ?? user?.display_name ?? user?.name ?? null;
 
+const extractSpotifyProfileUri = (user: any) =>
+  (typeof user?.uri === "string" && user.uri.length ? user.uri : null) ??
+  (typeof user?.id === "string" && user.id.length ? buildSpotifyUserUri(user.id) : null) ??
+  (typeof user?.username === "string" && user.username.length ? buildSpotifyUserUri(user.username) : null);
+
 const readSpotifyProfile = async () => {
   let displayName: string | null = null;
   let avatarUrl: string | null = null;
+  let profileUri: string | null = null;
 
   try {
     const user = await Spicetify.Platform.UserAPI.getUser();
     displayName = extractSpotifyDisplayName(user);
     avatarUrl = extractSpotifyAvatarUrl(user);
+    profileUri = extractSpotifyProfileUri(user);
   } catch {
     // Ignore UserAPI failures and try the Web API next.
   }
 
-  if (displayName && avatarUrl) {
-    return { displayName, avatarUrl };
+  if (displayName && avatarUrl && profileUri) {
+    return { displayName, avatarUrl, profileUri };
   }
 
   try {
     const me = await Spicetify.CosmosAsync.get("https://api.spotify.com/v1/me");
     return {
       displayName: displayName ?? me?.display_name ?? null,
-      avatarUrl: avatarUrl ?? me?.images?.[0]?.url ?? null
+      avatarUrl: avatarUrl ?? me?.images?.[0]?.url ?? null,
+      profileUri: profileUri ?? extractSpotifyProfileUri(me)
     };
   } catch {
-    return { displayName, avatarUrl };
+    return { displayName, avatarUrl, profileUri };
   }
 };
 
 const syncProfileFromSpotify = async () => {
   try {
     const profile = await readSpotifyProfile();
-    if (!profile.displayName && !profile.avatarUrl) {
+    if (!profile.displayName && !profile.avatarUrl && !profile.profileUri) {
       return;
     }
 
@@ -183,10 +398,15 @@ const syncProfileFromSpotify = async () => {
       writeSpicetifyStorage(LOCAL_STORAGE_KEYS.profileImageUrl, profile.avatarUrl);
     }
 
+    if (profile.profileUri) {
+      writeSpicetifyStorage(LOCAL_STORAGE_KEYS.profileUri, profile.profileUri);
+    }
+
     store.setState((state) => ({
       ...state,
       displayName: profile.displayName ?? state.displayName,
-      profileImageUrl: profile.avatarUrl ?? state.profileImageUrl
+      profileImageUrl: profile.avatarUrl ?? state.profileImageUrl,
+      profileUri: profile.profileUri ?? state.profileUri
     }));
   } catch {
     // Ignore bootstrap lookup failures.
@@ -215,9 +435,11 @@ const mapSpotifyTrackToSessionTrack = (track: any): SessionTrack | null => {
       : Array.isArray(track?.coverArt?.sources)
         ? track.coverArt.sources
         : [];
+  const metadata = track?.metadata && typeof track.metadata === "object" ? (track.metadata as Record<string, unknown>) : null;
 
   return {
     trackUri: rawUri,
+    artistUri: resolveArtistUri(artists[0] ?? track?.artist ?? track?.firstArtist, metadata),
     title: track?.name ?? track?.title ?? UNKNOWN_TRACK_TITLE,
     artist: artists[0]?.name ?? artists[0]?.profile?.name ?? track?.artist?.name ?? UNKNOWN_TRACK_ARTIST,
     album: album?.name ?? album?.title ?? null,
@@ -256,6 +478,7 @@ const mapContextTrackMetadataToSessionTrack = (
 
   return {
     trackUri: buildSpotifyTrackUri(trackId),
+    artistUri: getMetadataArtistUri(metadata),
     title,
     artist,
     album: metadata.album_title?.trim() || null,
@@ -504,6 +727,7 @@ const fetchTrackSummaryFromOEmbed = async (trackId: string): Promise<SessionTrac
 
     return {
       trackUri: buildSpotifyTrackUri(trackId),
+      artistUri: normalizeArtistUri(payload?.author_url),
       title,
       artist,
       album: null,
@@ -829,7 +1053,42 @@ const renderArtwork = (options: {
         options.fallback
       );
 
-const renderParticipantSummary = (participant: ParticipantSummary, isSelf: boolean, presence: ParticipantPresence) =>
+type NavigationHandler = () => void | Promise<void>;
+
+const handleNavigationClick =
+  (navigate: NavigationHandler) =>
+  (event: any) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void navigate();
+  };
+
+const renderNavigableText = (
+  label: string,
+  navigate?: NavigationHandler | null,
+  options: {
+    title?: string;
+  } = {}
+) =>
+  navigate
+    ? h(
+        "button",
+        {
+          type: "button",
+          className: "together-nav-link",
+          onClick: handleNavigationClick(navigate),
+          title: options.title ?? label
+        },
+        label
+      )
+    : label;
+
+const renderParticipantSummary = (
+  participant: ParticipantSummary,
+  isSelf: boolean,
+  presence: ParticipantPresence,
+  profileUri: string | null
+) =>
   h(
     "li",
     {
@@ -849,8 +1108,13 @@ const renderParticipantSummary = (participant: ParticipantSummary, isSelf: boole
       h(
         "strong",
         { className: "together-member-chip__name" },
-        participant.name,
-        isSelf ? " (você)" : ""
+        renderNavigableText(
+          `${participant.name}${isSelf ? " (você)" : ""}`,
+          profileUri ? () => openProfilePage(profileUri) : null,
+          {
+            title: profileUri ? `Abrir perfil de ${participant.name}` : participant.name
+          }
+        )
       ),
       h(
         "span",
@@ -865,7 +1129,12 @@ const renderParticipantSummary = (participant: ParticipantSummary, isSelf: boole
 const renderQueueRow = (
   item: SessionQueueItem,
   index: number,
-  addedByName: string | undefined,
+  addedBy:
+    | {
+        name: string;
+        profileUri: string | null;
+      }
+    | null,
   onRemove: (itemId: string) => void
 ) =>
   h(
@@ -887,21 +1156,94 @@ const renderQueueRow = (
       h(
         "div",
         { className: "together-queue-row__copy" },
-        h("strong", { className: "together-queue-row__title" }, item.title),
-        h("span", { className: "together-queue-row__artist" }, item.artist)
+        h(
+          "strong",
+          { className: "together-queue-row__title" },
+          renderNavigableText(item.title, () => openTrackPage(item.trackUri), {
+            title: `Abrir faixa ${item.title}`
+          })
+        ),
+        h(
+          "span",
+          { className: "together-queue-row__artist" },
+          renderNavigableText(
+            item.artist,
+            () => openArtistPageForTrack({ artistUri: item.artistUri, trackUri: item.trackUri, artistName: item.artist }),
+            {
+            title: `Abrir artista ${item.artist}`
+            }
+          )
+        )
       )
     ),
-    h("span", { className: "together-queue-row__added" }, addedByName ?? "alguém"),
+    h(
+      "span",
+      { className: "together-queue-row__added" },
+      renderNavigableText(addedBy?.name ?? "alguém", addedBy?.profileUri ? () => openProfilePage(addedBy.profileUri) : null, {
+        title: addedBy?.profileUri ? `Abrir perfil de ${addedBy.name}` : addedBy?.name ?? "alguém"
+      })
+    ),
     h("span", { className: "together-queue-row__duration" }, formatDuration(item.durationMs)),
     h(
       "button",
       {
         className: "together-icon-button together-icon-button--danger",
-        onClick: () => onRemove(item.id)
+        onClick: () => onRemove(item.id),
+        type: "button",
+        title: `Remover ${item.title} da fila`,
+        "aria-label": `Remover ${item.title} da fila`
       },
-      "x"
+      h(
+        "svg",
+        {
+          className: "together-icon-button__icon",
+          viewBox: "0 0 16 16",
+          fill: "none",
+          "aria-hidden": "true"
+        },
+        h("path", {
+          d: "M4 4L12 12M12 4L4 12",
+          stroke: "currentColor",
+          "stroke-width": "1.9",
+          "stroke-linecap": "round"
+        })
+      )
     )
   );
+
+const renderLyricsLine = (
+  line: NonNullable<TrackLyricsPayload["lines"]>[number],
+  index: number,
+  activeIndex: number,
+  refs: { current: Record<number, HTMLDivElement | null> }
+) => {
+  const distanceFromActive = activeIndex < 0 ? null : Math.abs(index - activeIndex);
+  const depthClass =
+    distanceFromActive == null
+      ? ""
+      : distanceFromActive === 0
+        ? " is-active"
+        : distanceFromActive === 1
+          ? " is-near"
+          : distanceFromActive <= 3
+            ? " is-mid"
+            : " is-far";
+  const directionClass =
+    activeIndex < 0 || index === activeIndex ? "" : index < activeIndex ? " is-past" : " is-future";
+
+  return h(
+    "div",
+    {
+      key: `${line.timeMs ?? "plain"}-${index}`,
+      ref: (node: HTMLDivElement | null) => {
+        refs.current[index] = node;
+      },
+      className: `together-lyrics-line${depthClass}${directionClass}${line.timeMs == null ? " is-plain" : ""}`
+    },
+    h("p", { className: "together-lyrics-line__text" }, line.text),
+    line.translation ? h("p", { className: "together-lyrics-line__translation" }, line.translation) : null
+  );
+};
 
 const renderActivity = (activity: SessionActivity) =>
   h(
@@ -922,8 +1264,8 @@ const renderActivity = (activity: SessionActivity) =>
 const TOGETHER_VERSION = process.env.TOGETHER_VERSION || "v1.0.0-dev";
 
 const useUpdateCheck = () => {
-  const [updateUrl, setUpdateUrl] = useState<string | null>(null);
-  const [newVersion, setNewVersion] = useState<string | null>(null);
+  const [updateUrl, setUpdateUrl] = useState(null as string | null);
+  const [newVersion, setNewVersion] = useState(null as string | null);
 
   useEffect(() => {
     fetch("https://api.github.com/repos/GaroteDePrograma/together/releases/latest")
@@ -947,6 +1289,12 @@ const TogetherApp = () => {
   const [roomCodeDraft, setRoomCodeDraft] = useState("");
   const [clock, setClock] = useState(Date.now());
   const [lastCopiedAt, setLastCopiedAt] = useState(0);
+  const [lyricsPayload, setLyricsPayload] = useState(null as TrackLyricsPayload | null);
+  const [lyricsStatus, setLyricsStatus] = useState("idle" as "idle" | "loading" | "ready" | "error");
+  const [lyricsDetached, setLyricsDetached] = useState(false);
+  const lyricsViewportRef = useRef(null as HTMLDivElement | null);
+  const lyricsLineRefs = useRef({} as Record<number, HTMLDivElement | null>);
+  const lyricsProgrammaticScrollUntilRef = useRef(0);
 
   useEffect(() => {
     ensureControllers();
@@ -977,22 +1325,128 @@ const TogetherApp = () => {
       ? clamp(Spicetify?.Player?.getProgress?.() ?? derivedPosition, 0, currentTrack.durationMs)
       : derivedPosition;
   const progressRatio = currentTrack?.durationMs ? clamp(displayPosition / currentTrack.durationMs, 0, 1) : 0;
-  const connectedCount = state.participants.filter((participant) => {
-    const isSelf = participant.memberId === state.memberId;
-    return resolveParticipantPresence(participant, {
-      isSelf,
-      socketConnected: state.socketConnected,
-      connectionStatus: state.connectionStatus
-    }) !== "offline";
-  }).length;
-  const participantNameById = useMemo(
-    () => Object.fromEntries(state.participants.map((participant) => [participant.memberId, participant.name])),
+  const activeLyricsIndex = useMemo(
+    () => findActiveLyricsLineIndex(lyricsPayload?.lines ?? [], displayPosition),
+    [displayPosition, lyricsPayload]
+  );
+  const participantById = useMemo(
+    () =>
+      Object.fromEntries(state.participants.map((participant) => [participant.memberId, participant])) as Record<
+        string,
+        ParticipantSummary
+      >,
     [state.participants]
   );
   const nextUpTrack = state.queue[0] ?? null;
   const roomCodeWasCopied = Boolean(state.roomCode) && clock - lastCopiedAt < 1800;
   const isInRoom = Boolean(state.roomCode);
   const canReconnectRoom = isInRoom && !state.socketConnected && state.connectionStatus !== "connecting";
+  const showLyricsSyncButton = lyricsDetached && lyricsPayload?.type === "synced";
+
+  const syncLyricsViewport = (behavior: ScrollBehavior = "smooth") => {
+    if (lyricsPayload?.type !== "synced") {
+      return;
+    }
+
+    const viewport = lyricsViewportRef.current;
+    if (!viewport) {
+      return;
+    }
+
+    lyricsProgrammaticScrollUntilRef.current = Date.now() + (behavior === "smooth" ? 650 : 180);
+    if (activeLyricsIndex < 0) {
+      viewport.scrollTo({
+        top: 0,
+        behavior
+      });
+      return;
+    }
+
+    const activeLine = lyricsLineRefs.current[activeLyricsIndex];
+    if (!activeLine) {
+      return;
+    }
+
+    const targetScrollTop = activeLine.offsetTop - viewport.clientHeight / 2 + activeLine.clientHeight / 2;
+    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    viewport.scrollTo({
+      top: clamp(targetScrollTop, 0, maxScrollTop),
+      behavior
+    });
+  };
+
+  const handleLyricsViewportScroll = () => {
+    if (lyricsPayload?.type !== "synced") {
+      return;
+    }
+
+    if (Date.now() < lyricsProgrammaticScrollUntilRef.current) {
+      return;
+    }
+
+    if (!lyricsDetached) {
+      setLyricsDetached(true);
+    }
+  };
+
+  useEffect(() => {
+    setLyricsDetached(false);
+    lyricsProgrammaticScrollUntilRef.current = 0;
+  }, [currentTrack?.trackUri]);
+
+  useEffect(() => {
+    if (!currentTrack) {
+      setLyricsPayload(null);
+      setLyricsStatus("idle");
+      lyricsLineRefs.current = {};
+      return;
+    }
+
+    let cancelled = false;
+    setLyricsStatus("loading");
+
+    fetchTrackLyrics(state.backendBaseUrl, {
+      title: currentTrack.title,
+      artist: currentTrack.artist
+    })
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+
+        setLyricsPayload(payload);
+        setLyricsStatus("ready");
+        lyricsLineRefs.current = {};
+      })
+      .catch((error) => {
+        console.warn("[Together] Falha ao carregar a letra da faixa.", {
+          currentTrack,
+          url: buildLyricsLookupUrl(state.backendBaseUrl, {
+            title: currentTrack.title,
+            artist: currentTrack.artist
+          }),
+          error
+        });
+        if (cancelled) {
+          return;
+        }
+
+        setLyricsPayload(null);
+        setLyricsStatus("error");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentTrack?.trackUri, currentTrack?.title, currentTrack?.artist, state.backendBaseUrl]);
+
+  useEffect(() => {
+    if (lyricsDetached) {
+      return;
+    }
+
+    syncLyricsViewport("smooth");
+  }, [activeLyricsIndex, lyricsDetached, lyricsPayload?.type, lyricsPayload?.trackName]);
 
   const copyRoomCode = async () => {
     if (!state.roomCode) {
@@ -1018,7 +1472,7 @@ const TogetherApp = () => {
       h(
         "div",
         { className: "together-column together-column--main" },
-        updateUrl && newVersion
+        false && updateUrl && newVersion
           ? h(
               "section",
               {
@@ -1050,12 +1504,34 @@ const TogetherApp = () => {
             h(
               "div",
               { className: "together-playback-card__body" },
-              h("h1", { className: "together-playback-card__title" }, currentTrack?.title ?? "Nenhuma faixa sincronizada"),
+              h(
+                "h1",
+                { className: "together-playback-card__title" },
+                currentTrack
+                  ? renderNavigableText(currentTrack.title, () => openTrackPage(currentTrack.trackUri), {
+                      title: `Abrir faixa ${currentTrack.title}`
+                    })
+                  : "Nenhuma faixa sincronizada"
+              ),
               h(
                 "p",
                 { className: "together-playback-card__artist" },
                 currentTrack
-                  ? `${currentTrack.artist}${currentTrack.album ? ` • ${currentTrack.album}` : ""}`
+                  ? [
+                      renderNavigableText(
+                        currentTrack.artist,
+                        () =>
+                          openArtistPageForTrack({
+                            artistUri: currentTrack.artistUri,
+                            trackUri: currentTrack.trackUri,
+                            artistName: currentTrack.artist
+                          }),
+                        {
+                        title: `Abrir artista ${currentTrack.artist}`
+                        }
+                      ),
+                      currentTrack.album ? ` • ${currentTrack.album}` : null
+                    ]
                   : "Crie uma sala ou entre em uma sessão para sincronizar."
               ),
               h(
@@ -1091,8 +1567,29 @@ const TogetherApp = () => {
                   h(
                     "div",
                     { className: "together-next-up__copy" },
-                    h("strong", { className: "together-next-up__title" }, nextUpTrack.title),
-                    h("span", { className: "together-next-up__artist" }, nextUpTrack.artist)
+                    h(
+                      "strong",
+                      { className: "together-next-up__title" },
+                      renderNavigableText(nextUpTrack.title, () => openTrackPage(nextUpTrack.trackUri), {
+                        title: `Abrir faixa ${nextUpTrack.title}`
+                      })
+                    ),
+                    h(
+                      "span",
+                      { className: "together-next-up__artist" },
+                      renderNavigableText(
+                        nextUpTrack.artist,
+                        () =>
+                          openArtistPageForTrack({
+                            artistUri: nextUpTrack.artistUri,
+                            trackUri: nextUpTrack.trackUri,
+                            artistName: nextUpTrack.artist
+                          }),
+                        {
+                        title: `Abrir artista ${nextUpTrack.artist}`
+                        }
+                      )
+                    )
                   )
                 )
               : h("span", { className: "together-next-up__empty" }, "Fila vazia")
@@ -1100,30 +1597,103 @@ const TogetherApp = () => {
         ),
         h(
           "section",
-          { className: "together-panel together-panel--members" },
+          { className: "together-panel together-panel--lyrics" },
           h(
             "div",
             { className: "together-panel__header" },
-            h("h2", { className: "together-panel__title" }, "Conectados")
+            h("h2", { className: "together-panel__title" }, "Letra"),
           ),
-          state.participants.length
-            ? h(
-                "ul",
-                { className: "together-member-list" },
-                state.participants.map((participant) => {
-                  const isSelf = participant.memberId === state.memberId;
-                  return renderParticipantSummary(
-                    participant,
-                    isSelf,
-                    resolveParticipantPresence(participant, {
-                      isSelf,
-                      socketConnected: state.socketConnected,
-                      connectionStatus: state.connectionStatus
-                    })
-                  );
-                })
-              )
-            : h("div", { className: "together-empty" }, "Nenhum participante")
+          !currentTrack
+            ? h("div", { className: "together-empty together-empty--lyrics" }, "Reproduza uma faixa para carregar a letra.")
+            : lyricsStatus === "loading"
+              ? h("div", { className: "together-empty together-empty--lyrics" }, "Carregando letra...")
+              : lyricsStatus === "error"
+                ? h("div", { className: "together-empty together-empty--lyrics" }, "Não foi possível carregar a letra.")
+                : lyricsPayload?.type === "instrumental"
+                  ? h("div", { className: "together-empty together-empty--lyrics" }, "Faixa instrumental.")
+                  : lyricsPayload?.lines.length
+                    ? h(
+                        "div",
+                        { className: "together-lyrics-card" },
+                        h(
+                          "div",
+                          { className: "together-lyrics-card__meta" },
+                          h(
+                            "strong",
+                            null,
+                            renderNavigableText(lyricsPayload.trackName, () => openTrackPage(currentTrack.trackUri), {
+                              title: `Abrir faixa ${lyricsPayload.trackName}`
+                            })
+                          ),
+                          h(
+                            "span",
+                            null,
+                            renderNavigableText(
+                              lyricsPayload.artistName,
+                              () =>
+                                openArtistPageForTrack({
+                                  artistUri: currentTrack.artistUri,
+                                  trackUri: currentTrack.trackUri,
+                                  artistName: lyricsPayload.artistName
+                                }),
+                              {
+                              title: `Abrir artista ${lyricsPayload.artistName}`
+                              }
+                            )
+                          )
+                        ),
+                        h(
+                          "div",
+                          {
+                            className: "together-lyrics-card__viewport",
+                            onScroll: handleLyricsViewportScroll,
+                            ref: (node: HTMLDivElement | null) => {
+                              lyricsViewportRef.current = node;
+                            }
+                          },
+                          lyricsPayload.lines.map((line: NonNullable<TrackLyricsPayload["lines"]>[number], index: number) =>
+                            renderLyricsLine(line, index, activeLyricsIndex, lyricsLineRefs)
+                          )
+                        ),
+                        showLyricsSyncButton
+                          ? h(
+                              "div",
+                              { className: "together-lyrics-card__sync" },
+                              h(
+                                "button",
+                                {
+                                  className: "together-button together-lyrics-sync-button",
+                                  onClick: () => {
+                                    setLyricsDetached(false);
+                                    syncLyricsViewport("smooth");
+                                  }
+                                },
+                                h(
+                                  "span",
+                                  {
+                                    className: "together-lyrics-sync-button__icon",
+                                    "aria-hidden": "true"
+                                  },
+                                  h(
+                                    "svg",
+                                    {
+                                      viewBox: "0 0 20 20",
+                                      fill: "none"
+                                    },
+                                    h("path", {
+                                      d: "M3.25 8.25V11.75M7.25 5.75V14.25M11.25 3.75V16.25M15.25 6.75V13.25M19.25 8.75V11.25",
+                                      stroke: "currentColor",
+                                      strokeWidth: "2",
+                                      strokeLinecap: "round"
+                                    })
+                                  )
+                                ),
+                                h("span", { className: "together-lyrics-sync-button__label" }, "Sincronizar")
+                              )
+                            )
+                          : null
+                      )
+                    : h("div", { className: "together-empty together-empty--lyrics" }, "Letra não encontrada.")
         ),
         h(
           "section",
@@ -1151,16 +1721,32 @@ const TogetherApp = () => {
             h("span", null, "#"),
             h("span", null, "Título"),
             h("span", null, "Adicionado por"),
-            h("span", null, "Dur."),
+            h("span", null, "Duração"),
             h("span", null, "")
           ),
           state.queue.length
             ? h(
                 "ul",
                 { className: "together-queue-list" },
-                state.queue.map((item, index) =>
-                  renderQueueRow(item, index, participantNameById[item.addedBy], removeQueueItem)
-                )
+                state.queue.map((item, index) => {
+                  const addedByParticipant = participantById[item.addedBy];
+                  const addedBy =
+                    addedByParticipant != null
+                      ? {
+                          name: addedByParticipant.name,
+                          profileUri:
+                            addedByParticipant.profileUri ??
+                            (addedByParticipant.memberId === state.memberId ? state.profileUri : null)
+                        }
+                      : item.addedBy === state.memberId
+                        ? {
+                            name: state.displayName,
+                            profileUri: state.profileUri
+                          }
+                        : null;
+
+                  return renderQueueRow(item, index, addedBy, removeQueueItem);
+                })
               )
             : h("div", { className: "together-empty together-empty--queue" }, "Nenhuma faixa na fila")
         )
@@ -1185,6 +1771,24 @@ const TogetherApp = () => {
               state.socketConnected ? "Conectado" : state.connectionStatus === "connecting" ? "Conectando" : "Offline"
             )
           ),
+          updateUrl && newVersion
+            ? h(
+                "button",
+                {
+                  className: "together-session-update",
+                  onClick: () => window.open(updateUrl, "_blank", "noopener,noreferrer"),
+                  type: "button",
+                  title: `Baixar ${newVersion} no GitHub`
+                },
+                h(
+                  "div",
+                  { className: "together-session-update__copy" },
+                  h("span", { className: "together-session-update__eyebrow" }, "Nova versão disponível"),
+                  h("strong", { className: "together-session-update__title" }, newVersion)
+                ),
+                h("span", { className: "together-session-update__action" }, "Baixar no GitHub")
+              )
+            : null,
           h(
             "div",
             { className: "together-session-copy" },
@@ -1297,6 +1901,35 @@ const TogetherApp = () => {
               onBlur: () => updateBackendBaseUrl(backendDraft),
               className: "together-input together-input--compact"
             })
+          ),
+          h(
+            "div",
+            { className: "together-session-section" },
+            h(
+              "div",
+              { className: "together-session-section__header" },
+              h("h3", { className: "together-session-section__title" }, "Conectados"),
+              h("span", { className: "together-panel__count" }, `${state.participants.length}`)
+            ),
+            state.participants.length
+              ? h(
+                  "ul",
+                  { className: "together-member-list together-member-list--session" },
+                  state.participants.map((participant) => {
+                    const isSelf = participant.memberId === state.memberId;
+                    return renderParticipantSummary(
+                      participant,
+                      isSelf,
+                      resolveParticipantPresence(participant, {
+                        isSelf,
+                        socketConnected: state.socketConnected,
+                        connectionStatus: state.connectionStatus
+                      }),
+                      participant.profileUri ?? (isSelf ? state.profileUri : null)
+                    );
+                  })
+                )
+              : h("div", { className: "together-empty together-empty--members" }, "Nenhum participante")
           ),
           state.connectionError ? h("p", { className: "together-error" }, state.connectionError) : null
         ),

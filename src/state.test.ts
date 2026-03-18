@@ -9,6 +9,7 @@ const buildSnapshot = (version: number): SessionRoomSnapshot => ({
       memberId: "member_1",
       name: "Alice",
       avatarUrl: null,
+      profileUri: null,
       isConnected: true,
       joinedAt: "2026-03-14T10:00:00.000Z"
     }
@@ -31,7 +32,7 @@ const buildSnapshot = (version: number): SessionRoomSnapshot => ({
 
 describe("applySnapshot", () => {
   it("accepts newer snapshots", () => {
-    const initial = createInitialAppState("http://localhost:3000", "Alice");
+    const initial = createInitialAppState("http://localhost:3000", "Alice", null);
     const next = applySnapshot(initial, {
       snapshot: buildSnapshot(2),
       roomCode: "ROOM01",
@@ -43,7 +44,7 @@ describe("applySnapshot", () => {
   });
 
   it("ignores stale snapshots", () => {
-    const initial = applySnapshot(createInitialAppState("http://localhost:3000", "Alice"), {
+    const initial = applySnapshot(createInitialAppState("http://localhost:3000", "Alice", null), {
       snapshot: buildSnapshot(5),
       roomCode: "ROOM01",
       memberId: "member_1"

@@ -6,7 +6,8 @@ export const SEEK_DETECTION_TOLERANCE_MS = 1800;
 export const LOCAL_STORAGE_KEYS = {
   backendBaseUrl: "together_backend_base_url",
   displayName: "together_display_name",
-  profileImageUrl: "together_profile_image_url"
+  profileImageUrl: "together_profile_image_url",
+  profileUri: "together_profile_uri"
 } as const;
 
 export const createId = (prefix: string) => {

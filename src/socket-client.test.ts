@@ -16,6 +16,7 @@ type MockSocketInstance = {
 
 const track: SessionTrack = {
   trackUri: "spotify:track:joined-track",
+  artistUri: null,
   title: "Joined Track",
   artist: "Artist",
   album: "Album",
@@ -48,6 +49,7 @@ const buildBootstrapResponse = (options?: {
         memberId: "member_host",
         name: "Host",
         avatarUrl: null,
+        profileUri: null,
         isConnected: true,
         joinedAt: "2026-03-17T09:59:00.000Z"
       },
@@ -55,6 +57,7 @@ const buildBootstrapResponse = (options?: {
         memberId: options?.memberId ?? "member_guest",
         name: "Guest",
         avatarUrl: null,
+        profileUri: null,
         isConnected: false,
         joinedAt: "2026-03-17T10:00:00.000Z"
       }
@@ -128,7 +131,7 @@ describe("TogetherSessionClient", () => {
   it("synchronizes playback immediately during join before opening the socket", async () => {
     const store = createAppStore(createInitialAppState("http://localhost:3000", "Guest", null));
     const response = buildBootstrapResponse();
-    let resolvePlaybackSync: (() => void) | null = null;
+    let resolvePlaybackSync: (() => void) | undefined;
     const onPlaybackState = vi.fn(
       () =>
         new Promise<void>((resolve) => {
@@ -155,7 +158,9 @@ describe("TogetherSessionClient", () => {
     expect(onPlaybackState).toHaveBeenCalledWith(response.snapshot.playbackState);
     expect(socketInstances).toHaveLength(0);
 
-    resolvePlaybackSync?.();
+    if (resolvePlaybackSync) {
+      resolvePlaybackSync();
+    }
     await joinPromise;
 
     expect(socketInstances).toHaveLength(1);

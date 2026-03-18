@@ -29,11 +29,26 @@ export type SessionActivityKind =
 
 export interface SessionTrack {
   trackUri: string;
+  artistUri: string | null;
   title: string;
   artist: string;
   album: string | null;
   imageUrl: string | null;
   durationMs: number;
+}
+
+export interface LyricsLine {
+  timeMs: number | null;
+  text: string;
+  translation: string | null;
+}
+
+export interface TrackLyricsPayload {
+  type: "synced" | "plain" | "not_found" | "instrumental";
+  trackName: string;
+  artistName: string;
+  lines: LyricsLine[];
+  plainLyrics: string | null;
 }
 
 export interface PlaybackState {
@@ -56,6 +71,7 @@ export interface ParticipantSummary {
   memberId: string;
   name: string;
   avatarUrl: string | null;
+  profileUri: string | null;
   isConnected: boolean;
   joinedAt: string;
 }
@@ -120,12 +136,14 @@ export interface BootstrapRoomResponse {
 export interface CreateRoomRequest {
   displayName: string;
   avatarUrl: string | null;
+  profileUri?: string | null;
   initialPlayback: InitialPlaybackStateInput | null;
 }
 
 export interface JoinRoomRequest {
   displayName: string;
   avatarUrl: string | null;
+  profileUri?: string | null;
 }
 
 export interface QueueTrackEnvelope {

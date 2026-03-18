@@ -15,6 +15,23 @@
   --tg-radius-lg: 14px;
   --tg-radius-md: 12px;
   --tg-shared-stack-card-height: 420px;
+  --tg-lyrics-card-height: 620px;
+  --tg-card-stage-top: #171b18;
+  --tg-card-stage-mid: #111412;
+  --tg-card-stage-bottom: #0a0d0b;
+  --tg-card-glow-strong: rgba(30, 215, 96, 0.12);
+  --tg-card-glow-soft: rgba(30, 215, 96, 0.06);
+  --tg-lyrics-stage-top: #1a1d1b;
+  --tg-lyrics-stage-mid: #121513;
+  --tg-lyrics-stage-bottom: #0b0d0c;
+  --tg-lyrics-text-far: rgba(255, 255, 255, 0.16);
+  --tg-lyrics-text-mid: rgba(255, 255, 255, 0.34);
+  --tg-lyrics-text-near: rgba(255, 255, 255, 0.66);
+  --tg-lyrics-text-active: #ffffff;
+  --tg-lyrics-translation-far: rgba(255, 255, 255, 0.08);
+  --tg-lyrics-translation-mid: rgba(255, 255, 255, 0.18);
+  --tg-lyrics-translation-near: rgba(255, 255, 255, 0.34);
+  --tg-lyrics-translation-active: rgba(255, 255, 255, 0.58);
 }
 
 .together-shell {
@@ -49,11 +66,24 @@
 }
 
 .together-panel {
+  position: relative;
+  overflow: hidden;
   padding: 18px;
   border: 1px solid var(--tg-border);
   border-radius: var(--tg-radius-xl);
-  background: var(--tg-surface);
-  box-shadow: var(--tg-shadow);
+  background:
+    radial-gradient(circle at top left, var(--tg-card-glow-strong), transparent 28%),
+    radial-gradient(circle at top right, rgba(255, 255, 255, 0.035), transparent 20%),
+    radial-gradient(circle at bottom center, var(--tg-card-glow-soft), transparent 36%),
+    linear-gradient(180deg, var(--tg-card-stage-top), var(--tg-card-stage-mid) 48%, var(--tg-card-stage-bottom));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.035),
+    var(--tg-shadow);
+}
+
+.together-panel--session {
+  display: grid;
+  align-content: start;
 }
 
 .together-panel--sidebar {
@@ -137,6 +167,42 @@
   margin: 6px 0 0;
   color: var(--tg-text-soft);
   line-height: 1.5;
+}
+
+.together-nav-link {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  text-align: inherit;
+  white-space: inherit;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+  cursor: pointer;
+  appearance: none;
+  transition:
+    color 140ms ease,
+    text-shadow 140ms ease,
+    opacity 140ms ease;
+}
+
+.together-nav-link:hover {
+  color: var(--tg-green);
+  text-decoration: underline;
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.14em;
+}
+
+.together-nav-link:focus-visible {
+  outline: 2px solid rgba(30, 215, 96, 0.78);
+  outline-offset: 3px;
+  border-radius: 6px;
 }
 
 .together-playback-card__progress {
@@ -262,6 +328,20 @@
   min-height: 0;
 }
 
+.together-panel--lyrics {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: var(--tg-lyrics-card-height);
+  min-height: 0;
+  overflow: hidden;
+  border-color: rgba(255, 255, 255, 0.08);
+  background:
+    radial-gradient(circle at top left, rgba(30, 215, 96, 0.12), transparent 28%),
+    radial-gradient(circle at top right, rgba(255, 255, 255, 0.04), transparent 22%),
+    radial-gradient(circle at bottom center, rgba(30, 215, 96, 0.08), transparent 36%),
+    linear-gradient(180deg, var(--tg-lyrics-stage-top), var(--tg-lyrics-stage-mid) 48%, var(--tg-lyrics-stage-bottom));
+}
+
 .together-panel--queue {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
@@ -275,7 +355,7 @@
 .together-queue-head,
 .together-queue-row {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1.7fr) minmax(120px, 0.8fr) 52px 34px;
+  grid-template-columns: 28px minmax(0, 1.65fr) minmax(120px, 0.8fr) 76px 34px;
   gap: 12px;
   align-items: center;
 }
@@ -349,8 +429,9 @@
 }
 
 .together-button--ghost {
-  background: var(--tg-surface-elevated);
+  background: linear-gradient(180deg, rgba(30, 215, 96, 0.12), rgba(255, 255, 255, 0.03));
   color: var(--tg-text);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
 .together-button--wide {
@@ -358,15 +439,24 @@
 }
 
 .together-icon-button {
+  display: grid;
+  place-items: center;
   width: 30px;
   height: 30px;
-  border: 0;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 50%;
   cursor: pointer;
-  background: rgba(255, 255, 255, 0.06);
+  background: linear-gradient(180deg, rgba(30, 215, 96, 0.12), rgba(255, 255, 255, 0.03));
   color: var(--tg-text);
   font-size: 12px;
   font-weight: 800;
+}
+
+.together-icon-button__icon {
+  width: 12px;
+  height: 12px;
+  display: block;
 }
 
 .together-icon-button--danger,
@@ -402,6 +492,78 @@
   margin-bottom: 0;
 }
 
+.together-session-update {
+  appearance: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+  width: 100%;
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border: 1px solid rgba(30, 215, 96, 0.18);
+  border-radius: var(--tg-radius-lg);
+  background:
+    radial-gradient(circle at top left, rgba(30, 215, 96, 0.16), transparent 30%),
+    linear-gradient(180deg, rgba(30, 215, 96, 0.14), rgba(255, 255, 255, 0.025));
+  color: var(--tg-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.together-session-update:hover {
+  border-color: rgba(30, 215, 96, 0.3);
+  background: linear-gradient(180deg, rgba(30, 215, 96, 0.16), rgba(255, 255, 255, 0.03));
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.16);
+  transform: translateY(-1px);
+}
+
+.together-session-update__copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.together-session-update__eyebrow {
+  color: rgba(125, 255, 176, 0.86);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.together-session-update__title {
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+}
+
+.together-session-update__text {
+  margin: 0;
+  color: var(--tg-text-soft);
+  line-height: 1.45;
+}
+
+.together-session-update__action {
+  align-self: start;
+  padding: 8px 11px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
 .together-room-code-card {
   display: grid;
   gap: 6px;
@@ -410,7 +572,9 @@
   padding: 16px 18px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: var(--tg-radius-lg);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
+  background:
+    radial-gradient(circle at top left, rgba(30, 215, 96, 0.14), transparent 30%),
+    linear-gradient(180deg, rgba(30, 215, 96, 0.1), rgba(255, 255, 255, 0.025));
   color: var(--tg-text);
   text-align: left;
   cursor: pointer;
@@ -470,7 +634,9 @@
   padding: 13px 14px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: var(--tg-radius-lg);
-  background: #1f1f1f;
+  background:
+    radial-gradient(circle at top left, rgba(30, 215, 96, 0.1), transparent 32%),
+    linear-gradient(180deg, rgba(30, 215, 96, 0.08), rgba(255, 255, 255, 0.02));
   color: white;
   font: inherit;
 }
@@ -491,6 +657,28 @@
   margin-top: 18px;
 }
 
+.together-session-section {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.together-session-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.together-session-section__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
 .together-mini-actions {
   display: flex;
   flex-wrap: wrap;
@@ -508,7 +696,7 @@
   border-radius: 999px;
   cursor: pointer;
   color: var(--tg-text);
-  background: var(--tg-surface-soft);
+  background: linear-gradient(180deg, rgba(30, 215, 96, 0.1), rgba(255, 255, 255, 0.03));
   font-size: 12px;
   font-weight: 700;
   transition:
@@ -558,7 +746,10 @@
 .together-log-item {
   padding: 12px 14px;
   border-radius: var(--tg-radius-lg);
-  background: var(--tg-surface-soft);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background:
+    radial-gradient(circle at top left, rgba(30, 215, 96, 0.12), transparent 30%),
+    linear-gradient(180deg, rgba(30, 215, 96, 0.08), rgba(255, 255, 255, 0.02));
 }
 
 .together-panel--logs {
@@ -585,6 +776,285 @@
   color: var(--tg-text-muted);
   font-size: 11px;
   text-transform: uppercase;
+}
+
+.together-member-list--session {
+  max-height: 220px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.together-empty--members {
+  min-height: 72px;
+}
+
+.together-empty--lyrics {
+  min-height: 180px;
+}
+
+.together-lyrics-card {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+
+.together-lyrics-card__meta {
+  display: grid;
+  gap: 4px;
+  padding: 6px 12px 0;
+}
+
+.together-lyrics-card__meta strong {
+  font-family: var(--encore-body-font-stack, "Segoe UI Variable", "Helvetica Neue", sans-serif);
+  font-size: 34px;
+  font-weight: 800;
+  line-height: 0.98;
+  letter-spacing: -0.04em;
+  color: rgba(255, 255, 255, 0.96);
+}
+
+.together-lyrics-card__meta span {
+  color: rgba(255, 255, 255, 0.64);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.together-lyrics-card__sync {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  z-index: 2;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.together-lyrics-sync-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 154px;
+  padding: 12px 22px;
+  background: rgba(255, 255, 255, 0.98);
+  color: #151515;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  pointer-events: auto;
+  box-shadow:
+    0 14px 32px rgba(0, 0, 0, 0.22),
+    0 1px 0 rgba(255, 255, 255, 0.6) inset;
+  transition:
+    transform 140ms ease,
+    box-shadow 140ms ease,
+    background-color 140ms ease;
+}
+
+.together-lyrics-sync-button:hover {
+  background: #ffffff;
+  transform: translateY(-1px);
+  box-shadow:
+    0 16px 36px rgba(0, 0, 0, 0.26),
+    0 1px 0 rgba(255, 255, 255, 0.7) inset;
+}
+
+.together-lyrics-sync-button:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.82);
+  outline-offset: 3px;
+}
+
+.together-lyrics-sync-button__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+}
+
+.together-lyrics-sync-button__icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.together-lyrics-sync-button__label {
+  line-height: 1;
+}
+
+.together-lyrics-card__viewport {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 30px 18px 112px 12px;
+  scroll-padding-block: 42%;
+  scroll-snap-type: y proximity;
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 10%, #000 88%, transparent 100%);
+  mask-image: linear-gradient(180deg, transparent 0, #000 10%, #000 88%, transparent 100%);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+
+.together-lyrics-line {
+  position: relative;
+  --tg-lyrics-shift-x: 0px;
+  --tg-lyrics-scale: 0.96;
+  --tg-lyrics-opacity: 0.8;
+  --tg-lyrics-blur: 0px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  opacity: var(--tg-lyrics-opacity);
+  filter: blur(var(--tg-lyrics-blur));
+  transform: translate3d(var(--tg-lyrics-shift-x), 0, 0) scale(var(--tg-lyrics-scale));
+  transform-origin: left center;
+  scroll-snap-align: center;
+  will-change: transform, opacity, filter;
+  transition:
+    opacity 300ms ease,
+    transform 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    filter 300ms ease;
+}
+
+.together-lyrics-line__text,
+.together-lyrics-line__translation {
+  margin: 0;
+}
+
+.together-lyrics-line__text {
+  max-width: min(900px, 94%);
+  font-family: var(--encore-body-font-stack, "Segoe UI Variable", "Helvetica Neue", sans-serif);
+  font-size: clamp(32px, 3.5vw, 58px);
+  font-weight: 800;
+  line-height: 1.02;
+  letter-spacing: -0.035em;
+  word-spacing: 0.08em;
+  white-space: pre-wrap;
+  font-kerning: normal;
+  color: var(--tg-lyrics-text-mid);
+  text-wrap: pretty;
+  transition:
+    color 300ms ease,
+    text-shadow 300ms ease;
+}
+
+.together-lyrics-line__translation {
+  margin-top: 10px;
+  max-width: min(680px, 86%);
+  padding-left: 4px;
+  color: var(--tg-lyrics-translation-mid);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0;
+  word-spacing: 0.04em;
+  transition:
+    color 300ms ease,
+    opacity 300ms ease;
+}
+
+.together-lyrics-line.is-past {
+  --tg-lyrics-shift-x: -12px;
+}
+
+.together-lyrics-line.is-future {
+  --tg-lyrics-shift-x: 10px;
+}
+
+.together-lyrics-line.is-far {
+  --tg-lyrics-scale: 0.88;
+  --tg-lyrics-opacity: 0.54;
+  --tg-lyrics-blur: 0.2px;
+}
+
+.together-lyrics-line.is-mid {
+  --tg-lyrics-scale: 0.93;
+  --tg-lyrics-opacity: 0.72;
+}
+
+.together-lyrics-line.is-near {
+  --tg-lyrics-scale: 0.975;
+  --tg-lyrics-opacity: 0.92;
+}
+
+.together-lyrics-line.is-active {
+  --tg-lyrics-shift-x: 0px;
+  --tg-lyrics-scale: 1;
+  --tg-lyrics-opacity: 1;
+}
+
+.together-lyrics-line.is-plain {
+  --tg-lyrics-opacity: 0.88;
+}
+
+.together-lyrics-line.is-far .together-lyrics-line__text {
+  color: var(--tg-lyrics-text-far);
+}
+
+.together-lyrics-line.is-mid .together-lyrics-line__text {
+  color: var(--tg-lyrics-text-mid);
+}
+
+.together-lyrics-line.is-near .together-lyrics-line__text {
+  color: var(--tg-lyrics-text-near);
+}
+
+.together-lyrics-line.is-active .together-lyrics-line__text {
+  color: var(--tg-lyrics-text-active);
+  text-shadow:
+    0 10px 24px rgba(0, 0, 0, 0.22),
+    0 0 18px rgba(30, 215, 96, 0.08);
+}
+
+.together-lyrics-line.is-far .together-lyrics-line__translation {
+  color: var(--tg-lyrics-translation-far);
+}
+
+.together-lyrics-line.is-mid .together-lyrics-line__translation {
+  color: var(--tg-lyrics-translation-mid);
+}
+
+.together-lyrics-line.is-near .together-lyrics-line__translation {
+  color: var(--tg-lyrics-translation-near);
+}
+
+.together-lyrics-line.is-active .together-lyrics-line__translation {
+  color: var(--tg-lyrics-translation-active);
+}
+
+.together-lyrics-card__viewport::-webkit-scrollbar,
+.together-member-list--session::-webkit-scrollbar {
+  width: 10px;
+}
+
+.together-lyrics-card__viewport::-webkit-scrollbar-track,
+.together-member-list--session::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.together-lyrics-card__viewport::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.together-lyrics-card__viewport::-webkit-scrollbar-thumb,
+.together-member-list--session::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  background-clip: padding-box;
+}
+
+.together-lyrics-card__viewport::-webkit-scrollbar-thumb:hover,
+.together-member-list--session::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+  background-clip: padding-box;
 }
 
 .together-empty {
@@ -661,13 +1131,25 @@
     height: auto;
   }
 
+  .together-panel--lyrics {
+    height: auto;
+  }
+
+  .together-lyrics-card__viewport {
+    max-height: 520px;
+  }
+
+  .together-lyrics-line__text {
+    font-size: clamp(30px, 5vw, 52px);
+  }
+
   .together-playback-card {
     grid-template-columns: 1fr;
   }
 
   .together-queue-head,
   .together-queue-row {
-    grid-template-columns: 28px minmax(0, 1fr) 80px 52px 34px;
+    grid-template-columns: 28px minmax(0, 1fr) 84px 72px 34px;
   }
 }
 
@@ -685,9 +1167,46 @@
     flex-wrap: wrap;
   }
 
+  .together-member-list--session,
+  .together-lyrics-card__viewport {
+    max-height: none;
+  }
+
+  .together-lyrics-card__meta {
+    padding: 2px 6px 0;
+  }
+
+  .together-lyrics-card__meta strong {
+    font-size: 28px;
+  }
+
+  .together-lyrics-card__viewport {
+    gap: 18px;
+    padding: 18px 10px 78px 8px;
+  }
+
+  .together-lyrics-line__text {
+    max-width: 100%;
+    font-size: clamp(24px, 8.8vw, 38px);
+    line-height: 0.97;
+  }
+
+  .together-lyrics-line__translation {
+    max-width: 100%;
+    font-size: 13px;
+  }
+
+  .together-session-update {
+    grid-template-columns: 1fr;
+  }
+
+  .together-session-update__action {
+    justify-self: start;
+  }
+
   .together-queue-head,
   .together-queue-row {
-    grid-template-columns: 24px minmax(0, 1fr) 52px 30px;
+    grid-template-columns: 24px minmax(0, 1fr) 68px 30px;
   }
 
   .together-queue-head span:nth-child(3),

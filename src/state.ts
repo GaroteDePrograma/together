@@ -20,6 +20,7 @@ export interface AppState {
   backendBaseUrl: string;
   displayName: string;
   profileImageUrl: string | null;
+  profileUri: string | null;
   connectionStatus: ConnectionStatus;
   connectionError: string | null;
   socketConnected: boolean;
@@ -49,11 +50,13 @@ const emptyPlaybackState = (): PlaybackState => ({
 export const createInitialAppState = (
   backendBaseUrl: string,
   displayName: string,
-  profileImageUrl: string | null
+  profileImageUrl: string | null,
+  profileUri: string | null = null
 ): AppState => ({
   backendBaseUrl,
   displayName,
   profileImageUrl,
+  profileUri,
   connectionStatus: "idle",
   connectionError: null,
   socketConnected: false,

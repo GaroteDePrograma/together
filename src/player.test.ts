@@ -84,6 +84,7 @@ describe("buildTrackSummary", () => {
 
     expect(track).toEqual({
       trackUri: "spotify:track:123",
+      artistUri: null,
       title: "Track",
       artist: "Artist",
       album: "Album",
@@ -134,6 +135,7 @@ describe("estimatePlaybackPositionMs", () => {
 describe("shouldAutoPullQueuedTrack", () => {
   const previousTrack = {
     trackUri: "spotify:track:butterfly",
+    artistUri: null,
     title: "Butterfly",
     artist: "Smile.dk",
     album: "Album",
@@ -143,6 +145,7 @@ describe("shouldAutoPullQueuedTrack", () => {
 
   const nextTrack = {
     trackUri: "spotify:track:badboy",
+    artistUri: null,
     title: "Bad Boy",
     artist: "Artist",
     album: "Album",
@@ -190,6 +193,7 @@ describe("isImmediateNextTrack", () => {
 describe("shouldRequestQueuedAdvanceFromProgress", () => {
   const currentTrack = {
     trackUri: "spotify:track:queue-b",
+    artistUri: null,
     title: "Queue B",
     artist: "Artist",
     album: "Album",
@@ -232,6 +236,7 @@ describe("TogetherPlayerBridge.syncPlaybackState", () => {
     });
     const currentTrack: SessionTrack = {
       trackUri: "spotify:track:joined-track",
+      artistUri: null,
       title: "Joined Track",
       artist: "Artist",
       album: "Album",

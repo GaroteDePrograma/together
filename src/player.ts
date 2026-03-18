@@ -7,6 +7,44 @@ const safePlayerIsPlaying = () => Boolean(Spicetify?.Player?.isPlaying?.());
 const AUTO_PULL_END_TOLERANCE_MS = 2500;
 const AUTO_PULL_NEXT_TRACK_PROGRESS_MAX_MS = 3000;
 const AUTO_PULL_PROGRESS_TRIGGER_MS = 900;
+const ARTIST_URI_PREFIX = "spotify:artist:";
+
+const normalizeArtistUri = (value: unknown) => {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+
+  const normalizedValue = value.trim();
+  if (normalizedValue.startsWith(ARTIST_URI_PREFIX)) {
+    return normalizedValue;
+  }
+
+  const match = /^https?:\/\/open\.spotify\.com\/artist\/([A-Za-z0-9]+)(?:\?.*)?$/i.exec(normalizedValue);
+  return match?.[1] ? `${ARTIST_URI_PREFIX}${match[1]}` : null;
+};
+
+const getMetadataArtistUri = (metadata: Record<string, unknown> | null | undefined) => {
+  if (!metadata) {
+    return null;
+  }
+
+  for (const [key, value] of Object.entries(metadata)) {
+    if (/^artist_uri(?::\d+)?$/i.test(key)) {
+      const artistUri = normalizeArtistUri(value);
+      if (artistUri) {
+        return artistUri;
+      }
+    }
+  }
+
+  return null;
+};
+
+const resolveArtistUri = (artist: any, metadata?: Record<string, unknown> | null) =>
+  normalizeArtistUri(artist?.uri) ??
+  normalizeArtistUri(artist?.profile?.uri) ??
+  (typeof artist?.id === "string" && artist.id.length ? `${ARTIST_URI_PREFIX}${artist.id}` : null) ??
+  getMetadataArtistUri(metadata);
 
 export const buildTrackSummary = (playerItem: any): SessionTrack | null => {
   if (!playerItem?.uri) {
@@ -20,12 +58,15 @@ export const buildTrackSummary = (playerItem: any): SessionTrack | null => {
       : Array.isArray(playerItem.firstArtist?.items)
         ? playerItem.firstArtist.items
         : playerItem.artists ? [playerItem.artists] : [];
-      
+
   const firstArtist = artists[0] ?? playerItem.artist ?? playerItem.firstArtist;
   const images = playerItem.album?.images ?? playerItem.images ?? [];
+  const metadata =
+    playerItem?.metadata && typeof playerItem.metadata === "object" ? (playerItem.metadata as Record<string, unknown>) : null;
 
   return {
     trackUri: playerItem.uri,
+    artistUri: resolveArtistUri(firstArtist, metadata),
     title: playerItem.name ?? playerItem.title ?? "Faixa desconhecida",
     artist: firstArtist?.name ?? firstArtist?.profile?.name ?? playerItem.artist?.name ?? "Artista desconhecido",
     album: playerItem.album?.name ?? null,

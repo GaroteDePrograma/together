@@ -263,6 +263,7 @@ export class TogetherSessionClient {
     const payload: CreateRoomRequest = {
       displayName: this.store.getState().displayName,
       avatarUrl: this.store.getState().profileImageUrl,
+      profileUri: this.store.getState().profileUri,
       initialPlayback
     };
 
@@ -278,7 +279,8 @@ export class TogetherSessionClient {
   async joinRoom(roomCode: string) {
     const payload: JoinRoomRequest = {
       displayName: this.store.getState().displayName,
-      avatarUrl: this.store.getState().profileImageUrl
+      avatarUrl: this.store.getState().profileImageUrl,
+      profileUri: this.store.getState().profileUri
     };
 
     const response = await this.requestJson<BootstrapRoomResponse>(`/rooms/${roomCode}/join`, {
