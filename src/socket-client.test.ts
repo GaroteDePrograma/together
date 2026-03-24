@@ -124,6 +124,7 @@ describe("TogetherSessionClient", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -193,5 +194,46 @@ describe("TogetherSessionClient", () => {
 
     expect(onPlaybackState).not.toHaveBeenCalled();
     expect(socketInstances).toHaveLength(1);
+  });
+
+  it("retries websocket reconnection up to five times after the socket closes", async () => {
+    vi.useFakeTimers();
+
+    const store = createAppStore(createInitialAppState("http://localhost:3000", "Guest", null));
+    const response = buildBootstrapResponse();
+    const client = new TogetherSessionClient({
+      store,
+      onPlaybackState: vi.fn()
+    });
+
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => response
+    });
+
+    await client.joinRoom("ROOM01");
+
+    let currentSocket = socketInstances[0];
+    expect(currentSocket).toBeDefined();
+
+    currentSocket!.readyState = 1;
+    currentSocket!.onopen?.();
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      currentSocket!.onclose?.();
+
+      await vi.advanceTimersByTimeAsync(Math.min(5_000, 500 * attempt));
+      expect(socketInstances).toHaveLength(attempt + 1);
+
+      currentSocket = socketInstances.at(-1);
+      expect(currentSocket).toBeDefined();
+    }
+
+    currentSocket!.onclose?.();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(socketInstances).toHaveLength(6);
+    expect(store.getState().connectionStatus).toBe("error");
+    expect(store.getState().connectionError).toContain("5 attempts");
   });
 });

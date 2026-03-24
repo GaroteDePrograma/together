@@ -25,6 +25,7 @@ interface SessionClientOptions {
 }
 
 export class TogetherSessionClient {
+  private static readonly MAX_RECONNECT_ATTEMPTS = 5;
   private readonly store: AppStore;
   private readonly onPlaybackState: (playback: PlaybackState) => Promise<void> | void;
   private socket: WebSocket | null = null;
@@ -145,6 +146,16 @@ export class TogetherSessionClient {
 
   private scheduleReconnect() {
     if (!this.activeIdentity || this.reconnectTimer !== null) {
+      return;
+    }
+
+    if (this.reconnectAttempt >= TogetherSessionClient.MAX_RECONNECT_ATTEMPTS) {
+      this.store.setState((state) =>
+        setConnectionState(state, "error", {
+          socketConnected: false,
+          error: `WebSocket disconnected. Failed to reconnect after ${TogetherSessionClient.MAX_RECONNECT_ATTEMPTS} attempts.`
+        })
+      );
       return;
     }
 
@@ -273,6 +284,7 @@ export class TogetherSessionClient {
     });
 
     this.applyBootstrap(response);
+    this.reconnectAttempt = 0;
     this.connectSocket(response.roomCode, response.memberId);
   }
 
@@ -290,6 +302,7 @@ export class TogetherSessionClient {
 
     this.applyBootstrap(response);
     await this.syncPlaybackState(response.snapshot.playbackState);
+    this.reconnectAttempt = 0;
     this.connectSocket(response.roomCode, response.memberId);
   }
 
@@ -301,6 +314,8 @@ export class TogetherSessionClient {
 
     const snapshot = await this.requestJson<SessionRoomSnapshot>(`/rooms/${identity.roomCode}`);
     await this.handleSnapshot(snapshot);
+    this.reconnectAttempt = 0;
+    this.clearReconnectTimer();
     this.connectSocket(identity.roomCode, identity.memberId);
   }
 

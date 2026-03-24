@@ -472,7 +472,8 @@ var TogetherBundle = (() => {
   };
 
   // src/socket-client.ts
-  var TogetherSessionClient = class {
+  var TogetherSessionClient = class _TogetherSessionClient {
+    static MAX_RECONNECT_ATTEMPTS = 5;
     store;
     onPlaybackState;
     socket = null;
@@ -573,6 +574,15 @@ var TogetherBundle = (() => {
     }
     scheduleReconnect() {
       if (!this.activeIdentity || this.reconnectTimer !== null) {
+        return;
+      }
+      if (this.reconnectAttempt >= _TogetherSessionClient.MAX_RECONNECT_ATTEMPTS) {
+        this.store.setState(
+          (state) => setConnectionState(state, "error", {
+            socketConnected: false,
+            error: `WebSocket disconnected. Failed to reconnect after ${_TogetherSessionClient.MAX_RECONNECT_ATTEMPTS} attempts.`
+          })
+        );
         return;
       }
       this.reconnectAttempt += 1;
@@ -680,6 +690,7 @@ var TogetherBundle = (() => {
         body: JSON.stringify(payload)
       });
       this.applyBootstrap(response);
+      this.reconnectAttempt = 0;
       this.connectSocket(response.roomCode, response.memberId);
     }
     async joinRoom(roomCode) {
@@ -694,6 +705,7 @@ var TogetherBundle = (() => {
       });
       this.applyBootstrap(response);
       await this.syncPlaybackState(response.snapshot.playbackState);
+      this.reconnectAttempt = 0;
       this.connectSocket(response.roomCode, response.memberId);
     }
     async reconnectCurrentRoom() {
@@ -703,6 +715,8 @@ var TogetherBundle = (() => {
       }
       const snapshot = await this.requestJson(`/rooms/${identity.roomCode}`);
       await this.handleSnapshot(snapshot);
+      this.reconnectAttempt = 0;
+      this.clearReconnectTimer();
       this.connectSocket(identity.roomCode, identity.memberId);
     }
     async leaveRoom() {
