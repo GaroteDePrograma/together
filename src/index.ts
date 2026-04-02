@@ -1119,8 +1119,6 @@ const renderParticipantSummary = (
       h(
         "span",
         { className: `together-member-chip__meta is-${presence}` },
-        presence === "online" ? "online" : presence === "connecting" ? "conectando" : "offline",
-        " • ",
         formatRelativeTime(participant.joinedAt)
       )
     )

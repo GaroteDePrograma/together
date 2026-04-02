@@ -168,6 +168,7 @@ var TogetherBundle = (() => {
     sendPlaybackCommand;
     requestQueueAdvance;
     started = false;
+    autoSyncInterval = null;
     lastProgressSampleMs = 0;
     lastProgressSampleAt = Date.now();
     lastAppliedPlaybackVersion = 0;
@@ -194,7 +195,44 @@ var TogetherBundle = (() => {
       Spicetify.Player.addEventListener("songchange", this.handleSongChange);
       Spicetify.Player.addEventListener("onplaypause", this.handlePlayPause);
       Spicetify.Player.addEventListener("onprogress", this.handleProgress);
+      this.autoSyncInterval = setInterval(this.checkAndFixDesync, 1e4);
     }
+    checkAndFixDesync = () => {
+      if (!this.canPublishEvents() || this.isSuppressed("progress")) {
+        return;
+      }
+      const state = this.store.getState();
+      const playback = state.playback;
+      if (!playback || !playback.currentTrack) {
+        return;
+      }
+      const currentTrackUri = Spicetify?.Player?.data?.item?.uri ?? null;
+      if (!currentTrackUri) {
+        return;
+      }
+      const targetTrackUri = playback.currentTrack.trackUri;
+      const isPlaying = safePlayerIsPlaying();
+      const currentProgress = safePlayerProgress();
+      let targetPositionMs = playback.positionMs;
+      if (playback.isPlaying && playback.updatedAt) {
+        const elapsedMs = Date.now() - new Date(playback.updatedAt).getTime();
+        if (elapsedMs > 0 && !Number.isNaN(elapsedMs)) {
+          targetPositionMs += elapsedMs;
+        }
+      }
+      const isWrongTrack = currentTrackUri !== targetTrackUri;
+      const isWrongPlayState = isPlaying !== playback.isPlaying;
+      const maxToleranceMs = isPlaying ? 5e3 : 2e3;
+      const isWrongPosition = Math.abs(currentProgress - targetPositionMs) > maxToleranceMs;
+      const isNearEnd = playback.currentTrack.durationMs - currentProgress < 8e3;
+      if (isNearEnd && currentTrackUri === targetTrackUri) {
+        return;
+      }
+      if (isWrongTrack || isWrongPlayState || isWrongPosition) {
+        this.lastAppliedPlaybackVersion = -1;
+        void this.syncPlaybackState(playback);
+      }
+    };
     isSuppressed(kind) {
       return Date.now() < this.suppressedUntil[kind];
     }
@@ -1533,8 +1571,6 @@ var TogetherBundle = (() => {
       h(
         "span",
         { className: `together-member-chip__meta is-${presence}` },
-        presence === "online" ? "online" : presence === "connecting" ? "conectando" : "offline",
-        " \u2022 ",
         formatRelativeTime(participant.joinedAt)
       )
     )

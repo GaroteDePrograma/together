@@ -166,6 +166,7 @@ export class TogetherPlayerBridge {
   private readonly sendPlaybackCommand: (command: PlaybackCommand) => void;
   private readonly requestQueueAdvance: (expectedTrackUri: string) => void;
   private started = false;
+  private autoSyncInterval: any = null;
   private lastProgressSampleMs = 0;
   private lastProgressSampleAt = Date.now();
   private lastAppliedPlaybackVersion = 0;
@@ -196,7 +197,55 @@ export class TogetherPlayerBridge {
     Spicetify.Player.addEventListener("songchange", this.handleSongChange);
     Spicetify.Player.addEventListener("onplaypause", this.handlePlayPause);
     Spicetify.Player.addEventListener("onprogress", this.handleProgress);
+
+    this.autoSyncInterval = setInterval(this.checkAndFixDesync, 10000);
   }
+
+  private checkAndFixDesync = () => {
+    if (!this.canPublishEvents() || this.isSuppressed("progress")) {
+      return;
+    }
+
+    const state = this.store.getState();
+    const playback = state.playback;
+    
+    if (!playback || !playback.currentTrack) {
+      return;
+    }
+
+    const currentTrackUri = Spicetify?.Player?.data?.item?.uri ?? null;
+    if (!currentTrackUri) {
+      return;
+    }
+
+    const targetTrackUri = playback.currentTrack.trackUri;
+    const isPlaying = safePlayerIsPlaying();
+    const currentProgress = safePlayerProgress();
+
+    let targetPositionMs = playback.positionMs;
+    if (playback.isPlaying && playback.updatedAt) {
+      const elapsedMs = Date.now() - new Date(playback.updatedAt).getTime();
+      if (elapsedMs > 0 && !Number.isNaN(elapsedMs)) {
+        targetPositionMs += elapsedMs;
+      }
+    }
+
+    const isWrongTrack = currentTrackUri !== targetTrackUri;
+    const isWrongPlayState = isPlaying !== playback.isPlaying;
+    const maxToleranceMs = isPlaying ? 5000 : 2000;
+    const isWrongPosition = Math.abs(currentProgress - targetPositionMs) > maxToleranceMs;
+
+    // Se estiver no finalzinho da musica auto skip vai pegar, entao não mexemos
+    const isNearEnd = playback.currentTrack.durationMs - currentProgress < 8000;
+    if (isNearEnd && currentTrackUri === targetTrackUri) {
+      return;
+    }
+
+    if (isWrongTrack || isWrongPlayState || isWrongPosition) {
+      this.lastAppliedPlaybackVersion = -1;
+      void this.syncPlaybackState(playback);
+    }
+  };
 
   private isSuppressed(kind: keyof TogetherPlayerBridge["suppressedUntil"]) {
     return Date.now() < this.suppressedUntil[kind];
