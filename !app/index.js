@@ -78,8 +78,6 @@ var TogetherBundle = (() => {
   // src/player.ts
   var safePlayerProgress = () => Spicetify?.Player?.getProgress?.() ?? 0;
   var safePlayerIsPlaying = () => Boolean(Spicetify?.Player?.isPlaying?.());
-  var AUTO_PULL_END_TOLERANCE_MS = 2500;
-  var AUTO_PULL_NEXT_TRACK_PROGRESS_MAX_MS = 3e3;
   var AUTO_PULL_PROGRESS_TRIGGER_MS = 900;
   var ARTIST_URI_PREFIX = "spotify:artist:";
   var normalizeArtistUri = (value) => {
@@ -150,21 +148,6 @@ var TogetherBundle = (() => {
   var shouldPublishSeek = (previousPositionMs, nextPositionMs, elapsedMs, toleranceMs = SEEK_DETECTION_TOLERANCE_MS) => {
     const observedDelta = Math.abs(nextPositionMs - previousPositionMs - elapsedMs);
     return observedDelta > toleranceMs;
-  };
-  var estimatePlaybackPositionMs = (options) => {
-    const elapsedMs = options.isPlaying ? Math.max(0, options.nowMs - options.sampledAtMs) : 0;
-    return clamp(options.sampledProgressMs + elapsedMs, 0, options.durationMs ?? Number.MAX_SAFE_INTEGER);
-  };
-  var shouldAutoPullQueuedTrack = (options) => {
-    const { previousTrack, nextTrack, queueLength, previousProgressMs, nextProgressMs } = options;
-    if (!previousTrack || !nextTrack || queueLength < 1) {
-      return false;
-    }
-    if (previousTrack.trackUri === nextTrack.trackUri || previousTrack.durationMs <= 0) {
-      return false;
-    }
-    const remainingMs = previousTrack.durationMs - previousProgressMs;
-    return remainingMs <= AUTO_PULL_END_TOLERANCE_MS && nextProgressMs <= AUTO_PULL_NEXT_TRACK_PROGRESS_MAX_MS;
   };
   var isImmediateNextTrack = (nextTracks, targetTrackUri) => nextTracks?.[0]?.uri === targetTrackUri;
   var shouldRequestQueuedAdvanceFromProgress = (options) => {
@@ -249,27 +232,11 @@ var TogetherBundle = (() => {
       if (!track) {
         return;
       }
-      const estimatedPreviousProgressMs = estimatePlaybackPositionMs({
-        sampledProgressMs: previousProgressMs,
-        sampledAtMs: previousProgressSampleAt,
-        nowMs: now,
-        isPlaying: state.playback.isPlaying,
-        durationMs: previousTrack?.durationMs
-      });
-      if (previousTrack && shouldAutoPullQueuedTrack({
-        previousTrack,
-        nextTrack: track,
-        queueLength: state.queue.length,
-        previousProgressMs: estimatedPreviousProgressMs,
-        nextProgressMs
-      })) {
-        this.requestQueueAdvance(previousTrack.trackUri);
-        return;
-      }
       this.emitCommand("SET_TRACK", {
         track,
         positionMs: nextProgressMs,
-        isPlaying: safePlayerIsPlaying(),
+        isPlaying: true,
+        // We changed the track, it should start immediately for everyone
         observedPreviousTrackUri: previousTrack?.trackUri ?? null
       });
     };
@@ -326,8 +293,15 @@ var TogetherBundle = (() => {
         await wait(180);
       }
       const currentProgress = safePlayerProgress();
-      if (Math.abs(currentProgress - playback.positionMs) > SEEK_SYNC_THRESHOLD_MS) {
-        Spicetify.Player.seek(playback.positionMs);
+      let targetPositionMs = playback.positionMs;
+      if (playback.isPlaying && playback.updatedAt) {
+        const elapsedMs = Date.now() - new Date(playback.updatedAt).getTime();
+        if (elapsedMs > 0 && !Number.isNaN(elapsedMs)) {
+          targetPositionMs += elapsedMs;
+        }
+      }
+      if (Math.abs(currentProgress - targetPositionMs) > SEEK_SYNC_THRESHOLD_MS) {
+        Spicetify.Player.seek(targetPositionMs);
       }
       const isPlaying = safePlayerIsPlaying();
       if (playback.isPlaying !== isPlaying) {
